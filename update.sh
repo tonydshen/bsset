@@ -31,6 +31,6 @@ fi
 
 # 4. Push to GitHub
 echo "Pushing to origin main ..."
-git push origin master
+git push origin main
 
 echo "✅ Update complete for $(hostname) at $DATE"
