@@ -61,3 +61,6 @@ Thumbs.db
 build/
 coverage/
 
+# --- BSSET generated data ---
+sec_cache.json
+

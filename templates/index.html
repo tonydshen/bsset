@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BSSET — SEC Browser</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    header {
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+      padding: 0 1.5rem;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: #f1f5f9;
+      letter-spacing: 0.04em;
+    }
+
+    header h1 span { color: #3b82f6; }
+
+    #breadcrumb { font-size: 0.8rem; color: #64748b; }
+    #breadcrumb .crumb { color: #cbd5e1; }
+    #breadcrumb .sep { margin: 0 0.4rem; color: #334155; }
+
+    /* ── Panels ── */
+    .panels {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid #334155;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 0.55rem 1rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      color: #475569;
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+      flex-shrink: 0;
+    }
+
+    .panel-body {
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .panel-body::-webkit-scrollbar { width: 4px; }
+    .panel-body::-webkit-scrollbar-track { background: transparent; }
+    .panel-body::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+
+    #panel-sectors   { width: 250px; min-width: 250px; }
+    #panel-industries { width: 290px; min-width: 290px; }
+    #panel-tickers   { flex: 1; border-right: none; }
+
+    /* ── List items ── */
+    .list-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.55rem 1rem;
+      cursor: pointer;
+      border-bottom: 1px solid rgba(51,65,85,0.4);
+      transition: background 0.1s;
+      user-select: none;
+    }
+
+    .list-item:hover  { background: #1e293b; }
+    .list-item.active { background: #1d4ed8; border-bottom-color: #1e40af; }
+
+    .item-label {
+      font-size: 0.855rem;
+      color: #cbd5e1;
+      line-height: 1.3;
+    }
+
+    .list-item.active .item-label { color: #fff; }
+
+    .sector-code {
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: #3b82f6;
+      margin-right: 0.45rem;
+    }
+
+    .list-item.active .sector-code { color: #93c5fd; }
+
+    .badge {
+      font-size: 0.7rem;
+      color: #475569;
+      background: #0f172a;
+      padding: 0.1rem 0.45rem;
+      border-radius: 9999px;
+      min-width: 2.4rem;
+      text-align: center;
+      flex-shrink: 0;
+      margin-left: 0.5rem;
+    }
+
+    .list-item.active .badge { background: #1e3a8a; color: #93c5fd; }
+
+    /* ── Empty / loading states ── */
+    .empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #334155;
+      font-size: 0.85rem;
+    }
+
+    /* ── Ticker table ── */
+    #ticker-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.855rem;
+    }
+
+    #ticker-table thead th {
+      position: sticky;
+      top: 0;
+      background: #1e293b;
+      color: #475569;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      padding: 0.6rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid #334155;
+    }
+
+    #ticker-table tbody tr {
+      border-bottom: 1px solid rgba(30,41,59,0.8);
+      transition: background 0.1s;
+    }
+
+    #ticker-table tbody tr:hover { background: #1e293b; }
+
+    #ticker-table td { padding: 0.48rem 1rem; color: #cbd5e1; }
+
+    #ticker-table td.t-ticker {
+      font-weight: 700;
+      color: #60a5fa;
+      font-family: 'Courier New', monospace;
+      font-size: 0.9rem;
+      width: 90px;
+    }
+
+    #ticker-table td.t-sic {
+      color: #475569;
+      font-family: 'Courier New', monospace;
+      font-size: 0.8rem;
+      width: 70px;
+    }
+
+    /* ── Footer count ── */
+    #ticker-footer {
+      padding: 0.4rem 1rem;
+      font-size: 0.72rem;
+      color: #475569;
+      background: #0f172a;
+      border-top: 1px solid #1e293b;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1><span>BSSET</span> &mdash; SEC Sector &middot; Industry &middot; Ticker Browser</h1>
+  <div id="breadcrumb">Select a sector to begin</div>
+</header>
+
+<div class="panels">
+
+  <!-- Sectors -->
+  <div class="panel" id="panel-sectors">
+    <div class="panel-header">SECTORS</div>
+    <div class="panel-body" id="sector-list">
+      <div class="empty">Loading&hellip;</div>
+    </div>
+  </div>
+
+  <!-- Industries -->
+  <div class="panel" id="panel-industries">
+    <div class="panel-header">INDUSTRIES</div>
+    <div class="panel-body" id="industry-list">
+      <div class="empty">&larr; Select a sector</div>
+    </div>
+  </div>
+
+  <!-- Tickers -->
+  <div class="panel" id="panel-tickers">
+    <div class="panel-header">TICKERS</div>
+    <div class="panel-body" id="ticker-list">
+      <div class="empty">&larr; Select an industry</div>
+    </div>
+    <div id="ticker-footer" style="display:none"></div>
+  </div>
+
+</div>
+
+<script>
+  const breadcrumb   = document.getElementById('breadcrumb');
+  const sectorList   = document.getElementById('sector-list');
+  const industryList = document.getElementById('industry-list');
+  const tickerList   = document.getElementById('ticker-list');
+  const tickerFooter = document.getElementById('ticker-footer');
+
+  let activeSector = null;
+
+  function setBreadcrumb(sector, industry) {
+    if (!sector) {
+      breadcrumb.textContent = 'Select a sector to begin';
+    } else if (!industry) {
+      breadcrumb.innerHTML = `<span class="crumb">${sector}</span>`;
+    } else {
+      breadcrumb.innerHTML =
+        `<span class="crumb">${sector}</span><span class="sep">›</span><span class="crumb">${industry}</span>`;
+    }
+  }
+
+  async function loadSectors() {
+    const data = await fetch('/api/sectors').then(r => r.json());
+    sectorList.innerHTML = '';
+    data.forEach(s => {
+      const el = document.createElement('div');
+      el.className = 'list-item';
+      el.innerHTML = `
+        <div class="item-label"><span class="sector-code">${s.code}</span>${s.name}</div>
+        <span class="badge">${s.count.toLocaleString()}</span>`;
+      el.addEventListener('click', () => selectSector(s, el));
+      sectorList.appendChild(el);
+    });
+  }
+
+  async function selectSector(sector, el) {
+    document.querySelectorAll('#sector-list .list-item').forEach(i => i.classList.remove('active'));
+    el.classList.add('active');
+    activeSector = sector;
+
+    setBreadcrumb(sector.name, null);
+    industryList.innerHTML = '<div class="empty">Loading&hellip;</div>';
+    tickerList.innerHTML   = '<div class="empty">&larr; Select an industry</div>';
+    tickerFooter.style.display = 'none';
+
+    const data = await fetch(`/api/industries/${sector.code}`).then(r => r.json());
+    industryList.innerHTML = '';
+    data.forEach(ind => {
+      const el = document.createElement('div');
+      el.className = 'list-item';
+      el.innerHTML = `
+        <div class="item-label">${ind.name}</div>
+        <span class="badge">${ind.count.toLocaleString()}</span>`;
+      el.addEventListener('click', () => selectIndustry(ind, el));
+      industryList.appendChild(el);
+    });
+  }
+
+  async function selectIndustry(industry, el) {
+    document.querySelectorAll('#industry-list .list-item').forEach(i => i.classList.remove('active'));
+    el.classList.add('active');
+
+    setBreadcrumb(activeSector.name, industry.name);
+    tickerList.innerHTML = '<div class="empty">Loading&hellip;</div>';
+    tickerFooter.style.display = 'none';
+
+    const data = await fetch(`/api/companies/${industry.major}`).then(r => r.json());
+    const cos  = data.companies;
+
+    if (!cos.length) {
+      tickerList.innerHTML = '<div class="empty">No companies found</div>';
+      return;
+    }
+
+    tickerList.innerHTML = `
+      <table id="ticker-table">
+        <thead>
+          <tr><th>TICKER</th><th>SIC</th><th>COMPANY</th></tr>
+        </thead>
+        <tbody>
+          ${cos.map(c => `
+            <tr>
+              <td class="t-ticker">${c.ticker}</td>
+              <td class="t-sic">${c.sic}</td>
+              <td>${c.title}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+
+    tickerFooter.textContent   = `${cos.length} companies`;
+    tickerFooter.style.display = 'block';
+  }
+
+  loadSectors();
+</script>
+
+</body>
+</html>
