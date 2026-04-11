@@ -234,6 +234,9 @@
   const tickerList   = document.getElementById('ticker-list');
   const tickerFooter = document.getElementById('ticker-footer');
 
+  // Works at any subpath (e.g. /bsset/) or root (localhost:5000)
+  const API = window.location.pathname.replace(/\/$/, '');
+
   let activeSector = null;
 
   function setBreadcrumb(sector, industry) {
@@ -248,7 +251,7 @@
   }
 
   async function loadSectors() {
-    const data = await fetch('/api/sectors').then(r => r.json());
+    const data = await fetch(`${API}/api/sectors`).then(r => r.json());
     sectorList.innerHTML = '';
     data.forEach(s => {
       const el = document.createElement('div');
@@ -271,7 +274,7 @@
     tickerList.innerHTML   = '<div class="empty">&larr; Select an industry</div>';
     tickerFooter.style.display = 'none';
 
-    const data = await fetch(`/api/industries/${sector.code}`).then(r => r.json());
+    const data = await fetch(`${API}/api/industries/${sector.code}`).then(r => r.json());
     industryList.innerHTML = '';
     data.forEach(ind => {
       const el = document.createElement('div');
@@ -292,7 +295,7 @@
     tickerList.innerHTML = '<div class="empty">Loading&hellip;</div>';
     tickerFooter.style.display = 'none';
 
-    const data = await fetch(`/api/companies/${industry.major}`).then(r => r.json());
+    const data = await fetch(`${API}/api/companies/${industry.major}`).then(r => r.json());
     const cos  = data.companies;
 
     if (!cos.length) {
