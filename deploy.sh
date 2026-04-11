@@ -31,9 +31,9 @@ if [ ! -f "sec_cache.json" ]; then
     venv/bin/python3 bsset.py --build-cache
 fi
 
-# 5. Restart app service (uncomment once systemd service is configured)
-# echo "Restarting BSSET service..."
-# sudo systemctl restart bsset
+# 5. Restart app service
+echo "Restarting BSSET service..."
+sudo systemctl restart bsset
 echo "--------------------------------------"
 echo "✅ Deployment Successful at $(date)"
 echo "--------------------------------------"
