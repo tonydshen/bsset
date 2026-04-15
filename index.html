@@ -1,7 +1,598 @@
-<html>
-	<body>
-		<h1>Hi there</h1>
-		<p> this is BSSET project</p>
-	</body>
-</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BSSET — SEC Sector Industry Ticker Browser</title>
+  <style>
+    /* ── Variables & reset ─────────────────────────────────────────── */
+    :root {
+      --bg:      #0f172a;
+      --surface: #1e293b;
+      --border:  #334155;
+      --text:    #f1f5f9;
+      --muted:   #94a3b8;
+      --accent:  #3b82f6;
+      --green:   #4ade80;
+      --red:     #f87171;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
 
+    /* ── Header ────────────────────────────────────────────────────── */
+    .app-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 1.25rem;
+      height: 52px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .header-left { display: flex; align-items: baseline; gap: 0.75rem; }
+    .app-title   { font-size: 1.1rem; font-weight: 700; color: var(--accent); letter-spacing: .05em; }
+    .app-sub     { font-size: 0.75rem; color: var(--muted); }
+
+    /* Period selector */
+    .period-bar   { display: flex; align-items: center; gap: 0.4rem; }
+    .period-label { font-size: 0.72rem; color: var(--muted); margin-right: 0.2rem; }
+    .period-btn {
+      padding: .22rem .6rem;
+      font-size: .75rem; font-weight: 600;
+      background: var(--bg); color: var(--muted);
+      border: 1px solid var(--border); border-radius: 4px;
+      cursor: pointer; transition: all .12s;
+    }
+    .period-btn:hover  { border-color: var(--accent); color: var(--text); }
+    .period-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    /* ── Workspace ─────────────────────────────────────────────────── */
+    .workspace { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar ───────────────────────────────────────────────────── */
+    .sidebar {
+      width: 262px; min-width: 262px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      display: flex; flex-direction: column;
+    }
+    .sidebar-section { padding: .4rem 0; }
+    .section-label {
+      padding: .5rem .875rem .2rem;
+      font-size: .64rem; font-weight: 700;
+      letter-spacing: .1em; color: var(--muted);
+      text-transform: uppercase;
+    }
+    .sidebar-hr { border: none; border-top: 1px solid var(--border); margin: .3rem 0; }
+
+    /* Nav items */
+    .nav-item {
+      display: flex; align-items: center;
+      padding: .42rem .875rem;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      transition: background .1s, border-color .1s;
+      font-size: .8rem; gap: .35rem;
+    }
+    .nav-item:hover  { background: rgba(59,130,246,.08); }
+    .nav-item.active {
+      background: rgba(59,130,246,.16);
+      border-left-color: var(--accent);
+    }
+    .nav-item .n-code {
+      font-size: .68rem; font-weight: 700;
+      color: var(--accent); min-width: 1.6rem;
+    }
+    .nav-item .n-name {
+      flex: 1; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+      color: var(--muted);
+    }
+    .nav-item.active .n-name { color: var(--text); }
+    .nav-item .n-count {
+      font-size: .65rem; color: var(--border);
+      white-space: nowrap; margin-left: .3rem;
+    }
+
+    /* ── Main panel ────────────────────────────────────────────────── */
+    .main-panel {
+      flex: 1; overflow-y: auto;
+      display: flex; flex-direction: column;
+      padding: .75rem 1rem; gap: .75rem;
+    }
+
+    /* Breadcrumb */
+    .breadcrumb { font-size: .75rem; color: var(--muted); }
+    .breadcrumb .bc-seg  { color: var(--text); }
+    .breadcrumb .bc-sep  { margin: 0 .4rem; color: var(--border); }
+
+    /* Error bar */
+    .error-bar {
+      background: rgba(248,113,113,.1);
+      border: 1px solid rgba(248,113,113,.3);
+      border-radius: 6px; padding: .5rem .875rem;
+      font-size: .8rem; color: var(--red);
+    }
+
+    /* ── Chart container ───────────────────────────────────────────── */
+    .chart-wrap {
+      position: relative;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      min-height: 260px;
+    }
+    .chart-img {
+      width: 100%; display: block; border-radius: 8px;
+    }
+    .chart-placeholder {
+      display: flex; align-items: center; justify-content: center;
+      min-height: 260px; color: var(--muted);
+      font-size: .85rem; text-align: center; padding: 2rem;
+    }
+
+    /* Loading overlay */
+    .loading-overlay {
+      position: absolute; inset: 0;
+      background: rgba(15,23,42,.85);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: .875rem; border-radius: 8px; z-index: 10;
+    }
+    .spinner {
+      width: 34px; height: 34px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .75s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-msg  { font-size: .85rem; color: var(--text); text-align: center; }
+    .loading-hint { font-size: .72rem; color: var(--muted); text-align: center; max-width: 240px; margin-top: .2rem; }
+
+    /* ── Performers section ────────────────────────────────────────── */
+    .performers-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: .75rem;
+    }
+    .perf-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .perf-card-title {
+      font-size: .77rem; font-weight: 700;
+      padding: .55rem .875rem;
+      border-bottom: 1px solid var(--border);
+      letter-spacing: .02em;
+    }
+    .perf-card-title.best  { color: var(--green); }
+    .perf-card-title.worst { color: var(--red);   }
+
+    /* Performer table */
+    .perf-table { width: 100%; border-collapse: collapse; font-size: .75rem; }
+    .perf-table thead tr { background: rgba(255,255,255,.03); }
+    .perf-table th {
+      padding: .32rem .55rem;
+      text-align: left;
+      font-size: .62rem; font-weight: 600;
+      letter-spacing: .07em; color: var(--muted);
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .perf-table td {
+      padding: .38rem .55rem;
+      border-bottom: 1px solid rgba(51,65,85,.45);
+      color: var(--muted);
+      max-width: 180px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .perf-table tr:last-child td { border-bottom: none; }
+    .perf-table tbody tr { cursor: pointer; transition: background .09s; }
+    .perf-table tbody tr:hover    td { background: rgba(59,130,246,.08); color: var(--text); }
+    .perf-table tbody tr.selected td { background: rgba(59,130,246,.18); color: var(--text); }
+
+    /* Cell styles */
+    .tc-ticker { font-weight: 700; color: var(--accent); font-family: monospace; font-size: .8rem; }
+    .tc-pos    { color: var(--green); font-weight: 600; }
+    .tc-neg    { color: var(--red);   font-weight: 600; }
+    .cik-link  { font-size: .68rem; color: var(--muted); text-decoration: none; }
+    .cik-link:hover { color: var(--accent); text-decoration: underline; }
+
+    .no-perf-data {
+      padding: 1.25rem; text-align: center;
+      color: var(--muted); font-size: .78rem;
+    }
+
+    /* ── Utility ───────────────────────────────────────────────────── */
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<header class="app-header">
+  <div class="header-left">
+    <div class="app-title">BSSET</div>
+    <div class="app-sub">SEC Sector Industry Ticker Browser</div>
+  </div>
+  <div class="period-bar">
+    <span class="period-label">Period:</span>
+    <button class="period-btn active" data-p="1mo">1M</button>
+    <button class="period-btn"        data-p="3mo">3M</button>
+    <button class="period-btn"        data-p="6mo">6M</button>
+    <button class="period-btn"        data-p="1y" >1Y</button>
+    <button class="period-btn"        data-p="ytd">YTD</button>
+  </div>
+</header>
+
+<!-- Main workspace -->
+<div class="workspace">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="section-label">Divisions</div>
+      <div id="division-list"></div>
+    </div>
+    <div id="industry-section" class="sidebar-section hidden">
+      <hr class="sidebar-hr">
+      <div class="section-label" id="industry-label">Industries</div>
+      <div id="industry-list"></div>
+    </div>
+  </aside>
+
+  <!-- Main panel -->
+  <main class="main-panel">
+
+    <!-- Breadcrumb -->
+    <div id="breadcrumb" class="breadcrumb hidden"></div>
+
+    <!-- Error bar -->
+    <div id="error-bar" class="error-bar hidden"></div>
+
+    <!-- Chart -->
+    <div class="chart-wrap" id="chart-wrap">
+      <div class="loading-overlay hidden" id="loading-overlay">
+        <div class="spinner"></div>
+        <div>
+          <div class="loading-msg"  id="loading-msg">Loading...</div>
+          <div class="loading-hint hidden" id="loading-hint">
+            First-time load for large divisions may take 1–2 minutes while downloading market data.
+          </div>
+        </div>
+      </div>
+      <div class="chart-placeholder" id="chart-placeholder">
+        Select a division from the sidebar to view its performance chart.
+      </div>
+      <img class="chart-img hidden" id="chart-img" alt="Performance chart">
+    </div>
+
+    <!-- Performers (shown when industry is selected) -->
+    <div id="performers-section" class="hidden">
+      <div class="performers-grid">
+        <div class="perf-card">
+          <div class="perf-card-title best">Best Performers &mdash; Top 10%</div>
+          <div id="best-wrap"></div>
+        </div>
+        <div class="perf-card">
+          <div class="perf-card-title worst">Worst Performers &mdash; Bottom 10%</div>
+          <div id="worst-wrap"></div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+const S = {
+  period:   '1mo',
+  division: null,   // {code, name}
+  industry: null,   // {major, name}
+  stock:    null,   // ticker string
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmtCap(v) {
+  if (!v) return 'N/A';
+  if (v >= 1e12) return '$' + (v/1e12).toFixed(2) + 'T';
+  if (v >= 1e9)  return '$' + (v/1e9).toFixed(2)  + 'B';
+  if (v >= 1e6)  return '$' + (v/1e6).toFixed(2)  + 'M';
+  return '$' + Number(v).toLocaleString();
+}
+
+function cikHtml(cik) {
+  if (!cik) return '<span style="color:#475569">—</span>';
+  const url = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${esc(cik)}`;
+  return `<a class="cik-link" href="${url}" target="_blank"
+            onclick="event.stopPropagation()">${esc(cik)}</a>`;
+}
+
+async function apiFetch(url) {
+  const r = await fetch(url);
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  return d;
+}
+
+// ── Loading / Error ───────────────────────────────────────────────────────────
+let _hintTimer = null;
+
+function showLoading(msg) {
+  $('loading-msg').textContent = msg;
+  $('loading-hint').classList.add('hidden');
+  $('loading-overlay').classList.remove('hidden');
+  $('error-bar').classList.add('hidden');
+  clearTimeout(_hintTimer);
+  _hintTimer = setTimeout(() => $('loading-hint').classList.remove('hidden'), 4000);
+}
+
+function hideLoading() {
+  clearTimeout(_hintTimer);
+  $('loading-overlay').classList.add('hidden');
+}
+
+function showError(msg) {
+  $('error-bar').textContent = 'Error: ' + msg;
+  $('error-bar').classList.remove('hidden');
+  hideLoading();
+}
+
+function clearError() {
+  $('error-bar').classList.add('hidden');
+}
+
+// ── Chart ─────────────────────────────────────────────────────────────────────
+function showChart(url) {
+  const img = $('chart-img');
+  img.src = url + '?t=' + Date.now();   // cache-bust the browser
+  img.classList.remove('hidden');
+  $('chart-placeholder').classList.add('hidden');
+}
+
+// ── Breadcrumb ────────────────────────────────────────────────────────────────
+function updateBreadcrumb() {
+  const bc = $('breadcrumb');
+  if (!S.division) { bc.classList.add('hidden'); return; }
+  let html = `<span class="bc-seg">${esc(S.division.code)}: ${esc(S.division.name)}</span>`;
+  if (S.industry) {
+    html += `<span class="bc-sep">›</span>
+             <span class="bc-seg">${esc(S.industry.name)}</span>`;
+  }
+  if (S.stock) {
+    html += `<span class="bc-sep">›</span>
+             <span class="bc-seg">${esc(S.stock)}</span>`;
+  }
+  bc.innerHTML = html;
+  bc.classList.remove('hidden');
+}
+
+// ── Sidebar: Divisions ────────────────────────────────────────────────────────
+function renderDivisions(list) {
+  $('division-list').innerHTML = list.map(d => `
+    <div class="nav-item" data-code="${esc(d.code)}"
+         onclick="selectDivision('${esc(d.code)}', '${esc(d.name)}')">
+      <span class="n-code">${esc(d.code)}</span>
+      <span class="n-name" title="${esc(d.name)}">${esc(d.name)}</span>
+      <span class="n-count">${d.count.toLocaleString()}</span>
+    </div>`).join('');
+}
+
+function setActiveDiv(code) {
+  document.querySelectorAll('#division-list .nav-item').forEach(el =>
+    el.classList.toggle('active', el.dataset.code === code));
+}
+
+// ── Sidebar: Industries ───────────────────────────────────────────────────────
+function renderIndustries(list, divCode) {
+  $('industry-label').textContent = `Industries in ${divCode}`;
+  $('industry-list').innerHTML = list.map(i => `
+    <div class="nav-item" data-major="${i.major}"
+         onclick="selectIndustry(${i.major}, '${esc(i.name)}')">
+      <span class="n-code" style="font-size:.64rem">${i.major}xx</span>
+      <span class="n-name" title="${esc(i.name)}">${esc(i.name)}</span>
+      <span class="n-count">${i.count.toLocaleString()}</span>
+    </div>`).join('');
+  $('industry-section').classList.remove('hidden');
+}
+
+function setActiveInd(major) {
+  document.querySelectorAll('#industry-list .nav-item').forEach(el =>
+    el.classList.toggle('active', +el.dataset.major === major));
+}
+
+// ── Performers tables ─────────────────────────────────────────────────────────
+function renderPerformers(best, worst) {
+  renderPerfTable('best-wrap',  best);
+  renderPerfTable('worst-wrap', worst);
+  $('performers-section').classList.remove('hidden');
+}
+
+function renderPerfTable(wrapperId, rows) {
+  const wrap = $(wrapperId);
+  if (!rows || rows.length === 0) {
+    wrap.innerHTML = '<div class="no-perf-data">No data available</div>';
+    return;
+  }
+  const tbody = rows.map(r => `
+    <tr data-ticker="${esc(r.ticker)}"
+        onclick="selectStock('${esc(r.ticker)}')"
+        title="${esc(r.title)}">
+      <td class="tc-ticker">${esc(r.ticker)}</td>
+      <td>${esc(r.title)}</td>
+      <td>${cikHtml(r.cik)}</td>
+      <td>${fmtCap(r.market_cap)}</td>
+      <td class="${r.return_pct >= 0 ? 'tc-pos' : 'tc-neg'}">
+        ${r.return_pct >= 0 ? '+' : ''}${r.return_pct.toFixed(1)}%
+      </td>
+    </tr>`).join('');
+  wrap.innerHTML = `
+    <table class="perf-table">
+      <thead>
+        <tr>
+          <th>Ticker</th><th>Company</th><th>CIK</th>
+          <th>Mkt Cap</th><th>Return</th>
+        </tr>
+      </thead>
+      <tbody>${tbody}</tbody>
+    </table>`;
+}
+
+function highlightStock(ticker) {
+  document.querySelectorAll('.perf-table tbody tr').forEach(r =>
+    r.classList.toggle('selected', r.dataset.ticker === ticker));
+}
+
+function hidePerformers() {
+  $('performers-section').classList.add('hidden');
+}
+
+// ── Navigation actions ────────────────────────────────────────────────────────
+async function selectDivision(code, name) {
+  S.division = {code, name};
+  S.industry = null;
+  S.stock    = null;
+  setActiveDiv(code);
+  $('industry-section').classList.add('hidden');
+  hidePerformers();
+  updateBreadcrumb();
+  clearError();
+  showLoading(`Loading Division ${code}: ${name}…`);
+  try {
+    const data = await apiFetch(`/api/division/${code}?period=${S.period}`);
+    hideLoading();
+    showChart(data.chart_url);
+    renderIndustries(data.industries, code);
+  } catch (err) {
+    hideLoading();
+    showError(err.message);
+  }
+}
+
+async function selectIndustry(major, name) {
+  S.industry = {major, name};
+  S.stock    = null;
+  setActiveInd(major);
+  hidePerformers();
+  updateBreadcrumb();
+  clearError();
+  showLoading(`Loading Industry: ${name}…`);
+  try {
+    const data = await apiFetch(
+      `/api/industry/${S.division.code}/${major}?period=${S.period}`);
+    hideLoading();
+    showChart(data.chart_url);
+    renderPerformers(data.best, data.worst);
+  } catch (err) {
+    hideLoading();
+    showError(err.message);
+  }
+}
+
+async function selectStock(ticker) {
+  S.stock = ticker;
+  highlightStock(ticker);
+  updateBreadcrumb();
+  clearError();
+  showLoading(`Loading ${ticker}…`);
+  try {
+    const params = new URLSearchParams({
+      period:   S.period,
+      division: S.division.code,
+      industry: S.industry.major,
+    });
+    const data = await apiFetch(`/api/stock/${ticker}?${params}`);
+    hideLoading();
+    showChart(data.chart_url);
+  } catch (err) {
+    hideLoading();
+    showError(err.message);
+  }
+}
+
+// ── Period selector ───────────────────────────────────────────────────────────
+document.querySelectorAll('.period-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    if (btn.dataset.p === S.period) return;
+    S.period = btn.dataset.p;
+    document.querySelectorAll('.period-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.p === S.period));
+    await reloadCurrentView();
+  });
+});
+
+async function reloadCurrentView() {
+  if (!S.division) return;
+  // Must reload in order: division → industry → stock (each caches for the next)
+  clearError();
+  showLoading(`Reloading Division ${S.division.code} for new period…`);
+  try {
+    const divData = await apiFetch(
+      `/api/division/${S.division.code}?period=${S.period}`);
+    showChart(divData.chart_url);
+    renderIndustries(divData.industries, S.division.code);
+
+    if (S.industry) {
+      $('loading-msg').textContent = `Reloading ${S.industry.name}…`;
+      const indData = await apiFetch(
+        `/api/industry/${S.division.code}/${S.industry.major}?period=${S.period}`);
+      showChart(indData.chart_url);
+      renderPerformers(indData.best, indData.worst);
+
+      if (S.stock) {
+        $('loading-msg').textContent = `Reloading ${S.stock}…`;
+        const params = new URLSearchParams({
+          period: S.period,
+          division: S.division.code,
+          industry: S.industry.major,
+        });
+        const stkData = await apiFetch(`/api/stock/${S.stock}?${params}`);
+        showChart(stkData.chart_url);
+        highlightStock(S.stock);
+      }
+    }
+    hideLoading();
+  } catch (err) {
+    hideLoading();
+    showError(err.message);
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+(async () => {
+  try {
+    const divisions = await apiFetch('/api/divisions');
+    renderDivisions(divisions);
+  } catch (err) {
+    showError('Failed to load divisions: ' + err.message);
+  }
+})();
+</script>
+
+</body>
+</html>

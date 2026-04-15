@@ -63,4 +63,6 @@ coverage/
 
 # --- BSSET generated data ---
 sec_cache.json
+data_cache.json
+charts/
 
