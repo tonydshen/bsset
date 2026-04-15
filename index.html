@@ -301,6 +301,14 @@
 </div>
 
 <script>
+// ── Base path (handles Apache reverse-proxy subpath, e.g. /bsset/) ───────────
+// When served at /bsset/, window.location.pathname is "/bsset/" so BASE="/bsset".
+// When served at /, pathname is "/" so BASE="". Works in both cases.
+const BASE = (() => {
+  const p = window.location.pathname;
+  return p.endsWith('/') ? p.slice(0, -1) : p;
+})();
+
 // ── State ────────────────────────────────────────────────────────────────────
 const S = {
   period:   '1mo',
@@ -370,7 +378,7 @@ function clearError() {
 // ── Chart ─────────────────────────────────────────────────────────────────────
 function showChart(url) {
   const img = $('chart-img');
-  img.src = url + '?t=' + Date.now();   // cache-bust the browser
+  img.src = BASE + url + '?t=' + Date.now();   // BASE prefix + cache-bust
   img.classList.remove('hidden');
   $('chart-placeholder').classList.add('hidden');
 }
@@ -484,7 +492,7 @@ async function selectDivision(code, name) {
   clearError();
   showLoading(`Loading Division ${code}: ${name}…`);
   try {
-    const data = await apiFetch(`/api/division/${code}?period=${S.period}`);
+    const data = await apiFetch(BASE + `/api/division/${code}?period=${S.period}`);
     hideLoading();
     showChart(data.chart_url);
     renderIndustries(data.industries, code);
@@ -504,7 +512,7 @@ async function selectIndustry(major, name) {
   showLoading(`Loading Industry: ${name}…`);
   try {
     const data = await apiFetch(
-      `/api/industry/${S.division.code}/${major}?period=${S.period}`);
+      BASE + `/api/industry/${S.division.code}/${major}?period=${S.period}`);
     hideLoading();
     showChart(data.chart_url);
     renderPerformers(data.best, data.worst);
@@ -526,7 +534,7 @@ async function selectStock(ticker) {
       division: S.division.code,
       industry: S.industry.major,
     });
-    const data = await apiFetch(`/api/stock/${ticker}?${params}`);
+    const data = await apiFetch(BASE + `/api/stock/${ticker}?${params}`);
     hideLoading();
     showChart(data.chart_url);
   } catch (err) {
@@ -553,14 +561,14 @@ async function reloadCurrentView() {
   showLoading(`Reloading Division ${S.division.code} for new period…`);
   try {
     const divData = await apiFetch(
-      `/api/division/${S.division.code}?period=${S.period}`);
+      BASE + `/api/division/${S.division.code}?period=${S.period}`);
     showChart(divData.chart_url);
     renderIndustries(divData.industries, S.division.code);
 
     if (S.industry) {
       $('loading-msg').textContent = `Reloading ${S.industry.name}…`;
       const indData = await apiFetch(
-        `/api/industry/${S.division.code}/${S.industry.major}?period=${S.period}`);
+        BASE + `/api/industry/${S.division.code}/${S.industry.major}?period=${S.period}`);
       showChart(indData.chart_url);
       renderPerformers(indData.best, indData.worst);
 
@@ -571,7 +579,7 @@ async function reloadCurrentView() {
           division: S.division.code,
           industry: S.industry.major,
         });
-        const stkData = await apiFetch(`/api/stock/${S.stock}?${params}`);
+        const stkData = await apiFetch(BASE + `/api/stock/${S.stock}?${params}`);
         showChart(stkData.chart_url);
         highlightStock(S.stock);
       }
@@ -586,7 +594,7 @@ async function reloadCurrentView() {
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async () => {
   try {
-    const divisions = await apiFetch('/api/divisions');
+    const divisions = await apiFetch(BASE + '/api/divisions');
     renderDivisions(divisions);
   } catch (err) {
     showError('Failed to load divisions: ' + err.message);
