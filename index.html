@@ -219,6 +219,35 @@
       color: var(--muted); font-size: .78rem;
     }
 
+    /* ── Chart expand / collapse ──────────────────────────────────── */
+    .chart-wrap.expandable { cursor: pointer; }
+    .chart-wrap.expandable::after {
+      content: 'Click to expand chart';
+      position: absolute;
+      bottom: 8px; right: 10px;
+      font-size: .63rem;
+      color: rgba(148,163,184,.4);
+      pointer-events: none;
+    }
+    #performers-restore {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: .6rem 1rem;
+      text-align: center;
+      cursor: pointer;
+      font-size: .78rem;
+      color: var(--muted);
+      letter-spacing: .02em;
+      transition: background .1s, color .1s, border-color .1s;
+      user-select: none;
+    }
+    #performers-restore:hover {
+      background: rgba(59,130,246,.08);
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
     /* ── Utility ───────────────────────────────────────────────────── */
     .hidden { display: none !important; }
   </style>
@@ -296,6 +325,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Restore bar (shown when chart is expanded, performers hidden) -->
+    <div id="performers-restore" class="hidden">&#9660; Click to show performers</div>
 
   </main>
 </div>
@@ -435,10 +467,16 @@ function setActiveInd(major) {
 }
 
 // ── Performers tables ─────────────────────────────────────────────────────────
+function setChartExpandable(on) {
+  $('chart-wrap').classList.toggle('expandable', on);
+}
+
 function renderPerformers(best, worst) {
   renderPerfTable('best-wrap',  best);
   renderPerfTable('worst-wrap', worst);
   $('performers-section').classList.remove('hidden');
+  $('performers-restore').classList.add('hidden');
+  setChartExpandable(true);
 }
 
 function renderPerfTable(wrapperId, rows) {
@@ -478,6 +516,8 @@ function highlightStock(ticker) {
 
 function hidePerformers() {
   $('performers-section').classList.add('hidden');
+  $('performers-restore').classList.add('hidden');
+  setChartExpandable(false);
 }
 
 // ── Navigation actions ────────────────────────────────────────────────────────
@@ -590,6 +630,21 @@ async function reloadCurrentView() {
     showError(err.message);
   }
 }
+
+// ── Chart expand / collapse ───────────────────────────────────────────────────
+$('chart-wrap').addEventListener('click', () => {
+  if (!$('chart-wrap').classList.contains('expandable')) return;
+  if (!$('loading-overlay').classList.contains('hidden')) return; // loading in progress
+  $('performers-section').classList.add('hidden');
+  $('performers-restore').classList.remove('hidden');
+  setChartExpandable(false);
+});
+
+$('performers-restore').addEventListener('click', () => {
+  $('performers-section').classList.remove('hidden');
+  $('performers-restore').classList.add('hidden');
+  setChartExpandable(true);
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async () => {
