@@ -43,6 +43,27 @@
     .app-title   { font-size: 1.1rem; font-weight: 700; color: var(--accent); letter-spacing: .05em; }
     .app-sub     { font-size: 0.75rem; color: var(--muted); }
 
+    /* Ticker lookup */
+    .lookup-wrap  { display: flex; align-items: center; gap: .4rem; }
+    .lookup-input {
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: .24rem .65rem;
+      font-size: .8rem; width: 148px;
+      outline: none; transition: border-color .12s;
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    .lookup-input:focus    { border-color: var(--accent); }
+    .lookup-input::placeholder { color: var(--muted); text-transform: none; letter-spacing: 0; font-size: .75rem; }
+    .lookup-btn {
+      padding: .24rem .6rem;
+      background: var(--bg); color: var(--muted);
+      border: 1px solid var(--border); border-radius: 4px;
+      cursor: pointer; font-size: .8rem;
+      transition: all .12s; white-space: nowrap;
+    }
+    .lookup-btn:hover { border-color: var(--accent); color: var(--text); }
+
     /* Period selector */
     .period-bar   { display: flex; align-items: center; gap: 0.4rem; }
     .period-label { font-size: 0.72rem; color: var(--muted); margin-right: 0.2rem; }
@@ -233,6 +254,17 @@
       color: var(--muted); font-size: .78rem;
     }
 
+    /* Lookup match highlight */
+    .perf-table tbody tr.lookup-match td {
+      background: rgba(251,191,36,.11);
+      border-bottom-color: rgba(251,191,36,.2);
+    }
+    .perf-table tbody tr.lookup-match td:first-child {
+      border-left: 3px solid #fbbf24;
+      padding-left: calc(.55rem - 3px);
+    }
+    .perf-table tbody tr.lookup-match .tc-ticker { color: #fbbf24 !important; }
+
     /* ── Chart expand / collapse ──────────────────────────────────── */
     .chart-wrap.expandable { cursor: pointer; }
     .chart-wrap.expandable::after {
@@ -273,6 +305,12 @@
   <div class="header-left">
     <div class="app-title">BSSET</div>
     <div class="app-sub">SEC Sector Industry Ticker Browser</div>
+  </div>
+  <div class="lookup-wrap">
+    <input class="lookup-input" id="lookup-input" type="text"
+           placeholder="Ticker lookup…" maxlength="12"
+           autocomplete="off" spellcheck="false">
+    <button class="lookup-btn" id="lookup-btn">Find</button>
   </div>
   <div class="period-bar">
     <span class="period-label">Period:</span>
@@ -375,12 +413,13 @@ const BASE = (() => {
 
 // ── State ────────────────────────────────────────────────────────────────────
 const S = {
-  period:   '1mo',
-  division: null,   // {code, name}
-  industry: null,   // {major, name}
-  stock:    null,   // ticker string
-  bestPct:  10,     // percentile for best performers (10/20/30/40/50)
-  worstPct: 10,     // percentile for worst performers
+  period:      '1mo',
+  division:    null,   // {code, name}
+  industry:    null,   // {major, name}
+  stock:       null,   // ticker string
+  bestPct:     10,     // percentile for best performers (10/20/30/40/50)
+  worstPct:    10,     // percentile for worst performers
+  lookupTicker: null,  // ticker being highlighted from lookup
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -513,6 +552,7 @@ function renderPerformers(best, worst) {
   $('performers-section').classList.remove('hidden');
   $('performers-restore').classList.add('hidden');
   setChartExpandable(true);
+  if (S.lookupTicker) highlightLookup(S.lookupTicker);
 }
 
 function renderPerfTable(wrapperId, rows) {
@@ -558,9 +598,10 @@ function hidePerformers() {
 
 // ── Navigation actions ────────────────────────────────────────────────────────
 async function selectDivision(code, name) {
-  S.division = {code, name};
-  S.industry = null;
-  S.stock    = null;
+  S.division     = {code, name};
+  S.industry     = null;
+  S.stock        = null;
+  S.lookupTicker = null;
   setActiveDiv(code);
   $('industry-section').classList.add('hidden');
   hidePerformers();
@@ -578,11 +619,12 @@ async function selectDivision(code, name) {
   }
 }
 
-async function selectIndustry(major, name) {
-  S.industry = {major, name};
-  S.stock    = null;
-  S.bestPct  = 10;
-  S.worstPct = 10;
+async function selectIndustry(major, name, opts = {}) {
+  S.industry     = {major, name};
+  S.stock        = null;
+  S.bestPct      = opts.pct  !== undefined ? opts.pct  : 10;
+  S.worstPct     = opts.pct  !== undefined ? opts.pct  : 10;
+  S.lookupTicker = opts.lookupTicker || null;
   setActiveInd(major);
   hidePerformers();
   updateBreadcrumb();
@@ -593,7 +635,18 @@ async function selectIndustry(major, name) {
       BASE + `/api/industry/${S.division.code}/${major}?period=${S.period}`);
     hideLoading();
     showChart(data.chart_url);
-    renderPerformers(data.best, data.worst);
+    if (S.bestPct === 10 && S.worstPct === 10) {
+      // Use the performers already returned by the industry API (no extra round-trip)
+      renderPerformers(data.best, data.worst);
+    } else {
+      // Show section with loading placeholders, then fetch at desired percentile
+      $('best-pct-select').value  = S.bestPct;
+      $('worst-pct-select').value = S.worstPct;
+      $('performers-section').classList.remove('hidden');
+      $('performers-restore').classList.add('hidden');
+      setChartExpandable(true);
+      await reloadPerformers('both');
+    }
   } catch (err) {
     hideLoading();
     showError(err.message);
@@ -635,8 +688,9 @@ document.querySelectorAll('.period-btn').forEach(btn => {
 async function reloadCurrentView() {
   if (!S.division) return;
   // Must reload in order: division → industry → stock (each caches for the next)
-  S.bestPct  = 10;
-  S.worstPct = 10;
+  S.bestPct      = 10;
+  S.worstPct     = 10;
+  S.lookupTicker = null;
   clearError();
   showLoading(`Reloading Division ${S.division.code} for new period…`);
   try {
@@ -671,12 +725,45 @@ async function reloadCurrentView() {
   }
 }
 
+// ── Ticker lookup ────────────────────────────────────────────────────────────
+function highlightLookup(ticker) {
+  if (!ticker) return;
+  document.querySelectorAll('.perf-table tbody tr').forEach(r =>
+    r.classList.toggle('lookup-match', r.dataset.ticker === ticker));
+  const row = document.querySelector(`.perf-table tbody tr[data-ticker="${ticker}"]`);
+  if (row) row.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+async function lookupNavigate(raw) {
+  const ticker = raw.trim().toUpperCase();
+  if (!ticker) return;
+  clearError();
+  let info;
+  try {
+    info = await apiFetch(BASE + `/api/lookup/${encodeURIComponent(ticker)}`);
+  } catch (err) {
+    showError(`Ticker "${ticker}" not found`);
+    return;
+  }
+  // Navigate to division, then to industry at 50 % with highlight
+  await selectDivision(info.division, info.div_name);
+  await selectIndustry(info.major, info.ind_name,
+                       {pct: 50, lookupTicker: ticker});
+}
+
+$('lookup-btn').addEventListener('click', () =>
+  lookupNavigate($('lookup-input').value));
+
+$('lookup-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') lookupNavigate($('lookup-input').value);
+});
+
 // ── Percentile selectors ─────────────────────────────────────────────────────
 async function reloadPerformers(side) {
   if (!S.industry) return;
-  // Show inline loading state on the changing side only
-  const wrapId = side === 'best' ? 'best-wrap' : 'worst-wrap';
-  $(wrapId).innerHTML = '<div class="no-perf-data">Loading\u2026</div>';
+  const loading = '<div class="no-perf-data">Loading\u2026</div>';
+  if (side === 'best'  || side === 'both') $('best-wrap').innerHTML  = loading;
+  if (side === 'worst' || side === 'both') $('worst-wrap').innerHTML = loading;
 
   const params = new URLSearchParams({
     period:    S.period,
@@ -686,10 +773,13 @@ async function reloadPerformers(side) {
   try {
     const data = await apiFetch(
       BASE + `/api/performers/${S.division.code}/${S.industry.major}?${params}`);
-    if (side === 'best')  renderPerfTable('best-wrap',  data.best);
-    if (side === 'worst') renderPerfTable('worst-wrap', data.worst);
+    if (side === 'best'  || side === 'both') renderPerfTable('best-wrap',  data.best);
+    if (side === 'worst' || side === 'both') renderPerfTable('worst-wrap', data.worst);
+    if (S.lookupTicker) highlightLookup(S.lookupTicker);
   } catch (err) {
-    $(wrapId).innerHTML = `<div class="no-perf-data" style="color:var(--red)">Error: ${esc(err.message)}</div>`;
+    const errHtml = `<div class="no-perf-data" style="color:var(--red)">Error: ${esc(err.message)}</div>`;
+    if (side === 'best'  || side === 'both') $('best-wrap').innerHTML  = errHtml;
+    if (side === 'worst' || side === 'both') $('worst-wrap').innerHTML = errHtml;
   }
 }
 

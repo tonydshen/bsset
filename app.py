@@ -557,6 +557,33 @@ def api_industry(div_code: str, major: int):
     })
 
 
+@app.route('/api/lookup/<ticker>')
+def api_lookup(ticker: str):
+    ticker = ticker.strip().upper()
+    cik    = _ticker_to_cik.get(ticker)
+    if not cik:
+        return jsonify({'error': f'Ticker "{ticker}" not found in SEC data'}), 404
+
+    co    = _sec_cache.get(cik, {})
+    sic   = co.get('sic', 0)
+    major = sic // 100
+
+    for code, sector in _tree.items():
+        if str(major) in sector['industries']:
+            ind = sector['industries'][str(major)]
+            return jsonify({
+                'ticker':   ticker,
+                'title':    co.get('title', ticker),
+                'cik':      cik,
+                'division': code,
+                'div_name': sector['name'],
+                'major':    major,
+                'ind_name': ind['name'],
+            })
+
+    return jsonify({'error': f'Industry not found for SIC {sic}'}), 404
+
+
 @app.route('/api/performers/<div_code>/<int:major>')
 def api_performers(div_code: str, major: int):
     div_code = div_code.upper()
