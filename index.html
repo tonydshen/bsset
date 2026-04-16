@@ -179,9 +179,23 @@
       padding: .55rem .875rem;
       border-bottom: 1px solid var(--border);
       letter-spacing: .02em;
+      display: flex; align-items: center; gap: .35rem;
     }
     .perf-card-title.best  { color: var(--green); }
     .perf-card-title.worst { color: var(--red);   }
+    .perf-card-title .title-text { flex: 1; }
+    .pct-select {
+      background: rgba(0,0,0,.35);
+      color: inherit;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      font-size: .7rem; font-weight: 700;
+      padding: .1rem .25rem;
+      cursor: pointer;
+      outline: none;
+      flex-shrink: 0;
+    }
+    .pct-select:focus { border-color: var(--accent); }
 
     /* Performer table */
     .perf-table { width: 100%; border-collapse: collapse; font-size: .75rem; }
@@ -316,11 +330,29 @@
     <div id="performers-section" class="hidden">
       <div class="performers-grid">
         <div class="perf-card">
-          <div class="perf-card-title best">Best Performers &mdash; Top 10%</div>
+          <div class="perf-card-title best">
+            <span class="title-text">Best Performers &mdash; Top</span>
+            <select class="pct-select" id="best-pct-select">
+              <option value="10">10%</option>
+              <option value="20">20%</option>
+              <option value="30">30%</option>
+              <option value="40">40%</option>
+              <option value="50">50%</option>
+            </select>
+          </div>
           <div id="best-wrap"></div>
         </div>
         <div class="perf-card">
-          <div class="perf-card-title worst">Worst Performers &mdash; Bottom 10%</div>
+          <div class="perf-card-title worst">
+            <span class="title-text">Worst Performers &mdash; Bottom</span>
+            <select class="pct-select" id="worst-pct-select">
+              <option value="10">10%</option>
+              <option value="20">20%</option>
+              <option value="30">30%</option>
+              <option value="40">40%</option>
+              <option value="50">50%</option>
+            </select>
+          </div>
           <div id="worst-wrap"></div>
         </div>
       </div>
@@ -347,6 +379,8 @@ const S = {
   division: null,   // {code, name}
   industry: null,   // {major, name}
   stock:    null,   // ticker string
+  bestPct:  10,     // percentile for best performers (10/20/30/40/50)
+  worstPct: 10,     // percentile for worst performers
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -474,6 +508,8 @@ function setChartExpandable(on) {
 function renderPerformers(best, worst) {
   renderPerfTable('best-wrap',  best);
   renderPerfTable('worst-wrap', worst);
+  $('best-pct-select').value  = S.bestPct;
+  $('worst-pct-select').value = S.worstPct;
   $('performers-section').classList.remove('hidden');
   $('performers-restore').classList.add('hidden');
   setChartExpandable(true);
@@ -545,6 +581,8 @@ async function selectDivision(code, name) {
 async function selectIndustry(major, name) {
   S.industry = {major, name};
   S.stock    = null;
+  S.bestPct  = 10;
+  S.worstPct = 10;
   setActiveInd(major);
   hidePerformers();
   updateBreadcrumb();
@@ -597,6 +635,8 @@ document.querySelectorAll('.period-btn').forEach(btn => {
 async function reloadCurrentView() {
   if (!S.division) return;
   // Must reload in order: division → industry → stock (each caches for the next)
+  S.bestPct  = 10;
+  S.worstPct = 10;
   clearError();
   showLoading(`Reloading Division ${S.division.code} for new period…`);
   try {
@@ -630,6 +670,38 @@ async function reloadCurrentView() {
     showError(err.message);
   }
 }
+
+// ── Percentile selectors ─────────────────────────────────────────────────────
+async function reloadPerformers(side) {
+  if (!S.industry) return;
+  // Show inline loading state on the changing side only
+  const wrapId = side === 'best' ? 'best-wrap' : 'worst-wrap';
+  $(wrapId).innerHTML = '<div class="no-perf-data">Loading\u2026</div>';
+
+  const params = new URLSearchParams({
+    period:    S.period,
+    best_pct:  S.bestPct,
+    worst_pct: S.worstPct,
+  });
+  try {
+    const data = await apiFetch(
+      BASE + `/api/performers/${S.division.code}/${S.industry.major}?${params}`);
+    if (side === 'best')  renderPerfTable('best-wrap',  data.best);
+    if (side === 'worst') renderPerfTable('worst-wrap', data.worst);
+  } catch (err) {
+    $(wrapId).innerHTML = `<div class="no-perf-data" style="color:var(--red)">Error: ${esc(err.message)}</div>`;
+  }
+}
+
+$('best-pct-select').addEventListener('change', () => {
+  S.bestPct = +$('best-pct-select').value;
+  reloadPerformers('best');
+});
+
+$('worst-pct-select').addEventListener('change', () => {
+  S.worstPct = +$('worst-pct-select').value;
+  reloadPerformers('worst');
+});
 
 // ── Chart expand / collapse ───────────────────────────────────────────────────
 $('chart-wrap').addEventListener('click', () => {

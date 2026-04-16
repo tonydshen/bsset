@@ -42,6 +42,7 @@ CACHE_TTL      = 86_400       # 24 hours
 BENCHMARKS     = ['^DJI', '^IXIC', '^GSPC']
 BENCH_LABELS   = {'^DJI': 'Dow Jones', '^IXIC': 'NASDAQ', '^GSPC': 'S&P 500'}
 VALID_PERIODS  = {'1mo', '3mo', '6mo', '1y', 'ytd'}
+VALID_PCTS     = {10, 20, 30, 40, 50}
 DEFAULT_PERIOD = '1mo'
 PERIOD_LABELS  = {'1mo': '1 Month', '3mo': '3 Months', '6mo': '6 Months',
                   '1y': '1 Year', 'ytd': 'YTD'}
@@ -297,14 +298,70 @@ def get_industry(div_code: str, major: int, period: str) -> dict:
         } for t in tlist]
 
     entry = {
-        'name':  ind_data['name'],
-        'dates': ind_data['dates'],
-        'avg':   ind_data['avg'],
-        'best':  _build(best_t),
-        'worst': _build(worst_t),
+        'name':    ind_data['name'],
+        'dates':   ind_data['dates'],
+        'avg':     ind_data['avg'],
+        'best':    _build(best_t),
+        'worst':   _build(worst_t),
+        'cap_map': cap_map,   # persisted so /api/performers can reuse + extend it
     }
     _cset(key, entry)
     return entry
+
+def get_performers(div_code: str, major: int, period: str,
+                   best_pct: float, worst_pct: float) -> dict:
+    """
+    Return best/worst performers at arbitrary percentile thresholds.
+    Reads total_returns from the division cache (no yfinance call).
+    Reuses the cap_map stored in the industry cache entry and fetches
+    only caps for tickers not yet seen (incremental growth).
+    """
+    ind_key   = f'ind_{div_code}_{major}_{period}'
+    ind_entry = _cget(ind_key) or get_industry(div_code, major, period)
+    if not ind_entry:
+        return {}
+
+    div_entry = _cget(f'div_{div_code}_{period}') or get_division(div_code, period)
+    if not div_entry:
+        return {}
+
+    ind_data = div_entry['industries'].get(str(major))
+    if not ind_data:
+        return {}
+
+    total_ret = pd.Series(ind_data['total_returns'])
+    tmeta     = ind_data['ticker_meta']
+    n         = len(total_ret)
+
+    n_best  = max(1, int(n * best_pct))
+    n_worst = max(1, int(n * worst_pct))
+
+    sorted_r = total_ret.sort_values()
+    worst_t  = sorted_r.iloc[:n_worst].index.tolist()
+    best_t   = sorted_r.iloc[-n_best:].index.tolist()[::-1]
+
+    # Incrementally grow cap_map — only fetch caps for tickers not yet cached
+    cap_map     = dict(ind_entry.get('cap_map', {}))
+    new_tickers = [t for t in set(best_t + worst_t) if t not in cap_map]
+    if new_tickers:
+        cap_map.update(_many_caps(new_tickers))
+        # Update the cap_map in place, keeping the existing 'ts' (no TTL reset)
+        with _lock:
+            if ind_key in _data_cache:
+                _data_cache[ind_key]['cap_map'] = cap_map
+                DATA_CACHE_PATH.write_text(json.dumps(_data_cache))
+
+    def _build(tlist: list[str]) -> list[dict]:
+        return [{
+            'ticker':     t,
+            'title':      tmeta.get(t, {}).get('title', t),
+            'cik':        tmeta.get(t, {}).get('cik', ''),
+            'return_pct': round(float(total_ret[t]), 2),
+            'market_cap': cap_map.get(t),
+        } for t in tlist]
+
+    return {'best': _build(best_t), 'worst': _build(worst_t)}
+
 
 # ── Chart generation ───────────────────────────────────────────────────────────
 def _base_fig() -> tuple[plt.Figure, plt.Axes]:
@@ -498,6 +555,30 @@ def api_industry(div_code: str, major: int):
         'best':      ind_entry['best'],
         'worst':     ind_entry['worst'],
     })
+
+
+@app.route('/api/performers/<div_code>/<int:major>')
+def api_performers(div_code: str, major: int):
+    div_code = div_code.upper()
+    period   = request.args.get('period', DEFAULT_PERIOD)
+
+    try:
+        best_pct  = int(request.args.get('best_pct',  10))
+        worst_pct = int(request.args.get('worst_pct', 10))
+    except ValueError:
+        return jsonify({'error': 'best_pct and worst_pct must be integers'}), 400
+
+    if period not in VALID_PERIODS:
+        return jsonify({'error': 'Invalid period'}), 400
+    if best_pct not in VALID_PCTS or worst_pct not in VALID_PCTS:
+        return jsonify({'error': 'Percentile must be 10, 20, 30, 40, or 50'}), 400
+
+    result = get_performers(div_code, major, period,
+                            best_pct / 100.0, worst_pct / 100.0)
+    if not result:
+        return jsonify({'error': 'Performer data unavailable — load the industry first'}), 503
+
+    return jsonify(result)
 
 
 @app.route('/api/stock/<ticker>')
