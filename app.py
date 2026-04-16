@@ -569,8 +569,8 @@ def api_lookup(ticker: str):
     major = sic // 100
 
     for code, sector in _tree.items():
-        if str(major) in sector['industries']:
-            ind = sector['industries'][str(major)]
+        if major in sector['industries']:
+            ind = sector['industries'][major]
             return jsonify({
                 'ticker':   ticker,
                 'title':    co.get('title', ticker),
