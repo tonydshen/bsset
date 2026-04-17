@@ -6,8 +6,8 @@ set -e  # Exit on any error
 
 # 1. Ensure we are on the master branch
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
-if [ "$BRANCH" != "main" ]; then
-    echo "❌ Error: You are on branch '$BRANCH'. Please switch to main."
+if [ "$BRANCH" != "bssetdb" ]; then
+    echo "❌ Error: You are on branch '$BRANCH'. Please switch to bssetdb."
     exit 1
 fi
 
@@ -26,11 +26,11 @@ git add .
 if git diff-index --quiet HEAD --; then
     echo "nb. No changes detected to commit."
 else
-    git commit -m "Update BSSET $DATE from $(hostname)"
+    git commit -m "Update BSSETDB $DATE from $(hostname)"
 fi
 
 # 4. Push to GitHub
-echo "Pushing to origin main ..."
-git push origin main
+echo "Pushing to origin bssetdb ..."
+git push origin bssetdb
 
 echo "✅ Update complete for $(hostname) at $DATE"
