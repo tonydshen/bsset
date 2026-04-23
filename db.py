@@ -175,3 +175,62 @@ def caps_save(caps: dict) -> None:
         cn.commit()
     finally:
         cn.close()
+
+# ── Outliers ──────────────────────────────────────────────────────────────────
+
+def init_tables() -> None:
+    """Create tables that don't exist yet. Safe to call on every startup."""
+    cn = _conn()
+    try:
+        cur = cn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS outliers (
+              id            INT AUTO_INCREMENT PRIMARY KEY,
+              ticker        VARCHAR(20)      NOT NULL,
+              title         VARCHAR(500),
+              cik           VARCHAR(20),
+              division_code CHAR(1)          NOT NULL,
+              major_group   TINYINT UNSIGNED NOT NULL,
+              period        VARCHAR(10)      NOT NULL,
+              reason        ENUM('sparse_data','iqr_return') NOT NULL,
+              return_pct    DECIMAL(10,4),
+              coverage_pct  DECIMAL(5,2),
+              iqr_lower     DECIMAL(10,4),
+              iqr_upper     DECIMAL(10,4),
+              market_cap    BIGINT,
+              detected_at   DATETIME         NOT NULL,
+              detected_date DATE             NOT NULL,
+              UNIQUE KEY uq_outlier (ticker, division_code, major_group,
+                                     period, reason, detected_date),
+              KEY idx_ticker        (ticker),
+              KEY idx_div_maj_period (division_code, major_group, period),
+              KEY idx_reason        (reason),
+              KEY idx_detected_date (detected_date)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        cn.commit()
+    finally:
+        cn.close()
+
+def outliers_save(rows: list) -> None:
+    """
+    rows: [(ticker, title, cik, division_code, major_group, period, reason,
+            return_pct, coverage_pct, iqr_lower, iqr_upper, market_cap,
+            detected_at, detected_date), ...]
+    Duplicate (ticker, div, major, period, reason, date) are silently ignored.
+    """
+    if not rows:
+        return
+    cn = _conn()
+    try:
+        cur = cn.cursor()
+        cur.executemany("""
+            INSERT IGNORE INTO outliers
+              (ticker, title, cik, division_code, major_group, period, reason,
+               return_pct, coverage_pct, iqr_lower, iqr_upper, market_cap,
+               detected_at, detected_date)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, rows)
+        cn.commit()
+    finally:
+        cn.close()

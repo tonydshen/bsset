@@ -20,7 +20,7 @@ Caching:
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import matplotlib
@@ -74,6 +74,7 @@ _mem_lock        = threading.Lock()
 def _startup() -> None:
     global _sec_cache, _tree, _ticker_to_cik
     CHARTS_DIR.mkdir(exist_ok=True)
+    db.init_tables()
     print('Loading SEC cache...')
     _sec_cache = load_or_build_cache()
     _tree = build_tree(_sec_cache)
@@ -186,32 +187,91 @@ def get_division(code: str, period: str) -> dict:
                        'cik':   _ticker_to_cik.get(t, ''),
                        'major': major}
 
-    # Fetch from yfinance if price_history doesn't have fresh data
     if not db.prices_fresh(all_t, period):
         _fetch_and_store(all_t, period)
 
-    closes = db.prices_get(all_t, db.period_start(period))
+    closes_raw = db.prices_get(all_t, db.period_start(period))
+    if closes_raw.empty:
+        return {}
+
+    closes_raw = closes_raw.dropna(axis=1, how='all')
+
+    # ── Layer 1: data quality filter — require ≥75% trading day coverage ──────
+    max_days = closes_raw.shape[0]
+    coverage = closes_raw.notna().sum()
+    min_days = max(1, int(max_days * 0.75))
+
+    sparse_t = coverage[coverage < min_days].index.tolist()
+    good_t   = coverage[coverage >= min_days].index.tolist()
+
+    if sparse_t:
+        now, today = datetime.now(), date.today()
+        db.outliers_save([
+            (t, meta.get(t, {}).get('title', t), meta.get(t, {}).get('cik', ''),
+             code, meta.get(t, {}).get('major', 99), period,
+             'sparse_data', None,
+             round(float(coverage[t]) / max_days * 100, 2),
+             None, None, None, now, today)
+            for t in sparse_t
+        ])
+
+    if not good_t:
+        return {}
+
+    closes = closes_raw[good_t].ffill().dropna(how='all')
     if closes.empty:
         return {}
 
-    closes  = closes.dropna(axis=1, how='all').ffill().dropna(how='all')
-    normed  = _normalize(closes)
-    div_avg = _group_avg(normed)
+    normed = _normalize(closes).dropna(axis=1, how='all')
+    if normed.empty:
+        return {}
+
+    # ── Layer 2: IQR return filter — exclude extreme outliers from averages ────
+    per_ret = normed.iloc[-1] - 100.0
+    q1, q3  = per_ret.quantile(0.25), per_ret.quantile(0.75)
+    iqr     = q3 - q1
+    lower   = q1 - 3.0 * iqr
+    upper   = q3 + 3.0 * iqr
+
+    iqr_mask = (per_ret < lower) | (per_ret > upper)
+    iqr_t    = per_ret[iqr_mask].index.tolist()
+    clean_t  = per_ret[~iqr_mask].index.tolist()
+
+    if iqr_t:
+        now, today = datetime.now(), date.today()
+        db.outliers_save([
+            (t, meta.get(t, {}).get('title', t), meta.get(t, {}).get('cik', ''),
+             code, meta.get(t, {}).get('major', 99), period,
+             'iqr_return',
+             round(float(per_ret[t]), 4), None,
+             round(float(lower), 4), round(float(upper), 4),
+             None, now, today)
+            for t in iqr_t
+        ])
+
+    # Averages use clean tickers only; returns/meta include all good tickers
+    # so performers display can still show the big winners/losers.
+    normed_clean = normed[clean_t] if clean_t else normed
+    div_avg      = _group_avg(normed_clean)
 
     industries: dict[str, dict] = {}
     for major, ind in sector['industries'].items():
-        ind_t = [t for t in normed.columns if meta.get(t, {}).get('major') == major]
-        if not ind_t:
+        ind_all   = [t for t in normed.columns       if meta.get(t, {}).get('major') == major]
+        ind_clean = [t for t in normed_clean.columns if meta.get(t, {}).get('major') == major]
+        if not ind_all:
             continue
-        sub = normed[ind_t]
-        ia  = _group_avg(sub)
-        ret = (sub.iloc[-1] - 100.0).to_dict()
+
+        avg_src = normed_clean[ind_clean] if ind_clean else normed[ind_all]
+        ia      = _group_avg(avg_src)
+        ret     = (normed[ind_all].iloc[-1] - 100.0).to_dict()
+
         industries[str(major)] = {
             'name':          ind['name'],
             'dates':         ia.index.strftime('%Y-%m-%d').tolist(),
             'avg':           [round(v, 4) for v in ia.tolist()],
-            'total_returns': {t: round(float(r), 4) for t, r in ret.items()},
-            'ticker_meta':   {t: meta[t] for t in ind_t},
+            'total_returns': {t: round(float(r), 4)
+                              for t, r in ret.items() if pd.notna(r)},
+            'ticker_meta':   {t: meta[t] for t in ind_all},
         }
 
     entry = {
