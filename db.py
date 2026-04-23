@@ -178,6 +178,49 @@ def caps_save(caps: dict) -> None:
 
 # ── Outliers ──────────────────────────────────────────────────────────────────
 
+# ── Sync log ──────────────────────────────────────────────────────────────────
+
+def sync_start(sync_type: str) -> int:
+    cn = _conn()
+    try:
+        cur = cn.cursor()
+        cur.execute("""
+            INSERT INTO sync_log (sync_type, started_at, status)
+            VALUES (%s, %s, 'running')
+        """, (sync_type, datetime.now()))
+        cn.commit()
+        return cur.lastrowid
+    finally:
+        cn.close()
+
+def sync_complete(sync_id: int, status: str,
+                  tickers: int = 0, rows: int = 0, error: str = None) -> None:
+    cn = _conn()
+    try:
+        cur = cn.cursor()
+        cur.execute("""
+            UPDATE sync_log
+               SET completed_at=%s, status=%s,
+                   tickers_processed=%s, rows_upserted=%s, error_message=%s
+             WHERE id=%s
+        """, (datetime.now(), status, tickers, rows, error, sync_id))
+        cn.commit()
+    finally:
+        cn.close()
+
+def truncate_for_sync() -> None:
+    """Truncate tables that are fully rebuilt each nightly sync."""
+    cn = _conn()
+    try:
+        cur = cn.cursor()
+        cur.execute('TRUNCATE TABLE price_history')
+        cur.execute('TRUNCATE TABLE market_caps')
+        cn.commit()
+    finally:
+        cn.close()
+
+# ── Table init ────────────────────────────────────────────────────────────────
+
 def init_tables() -> None:
     """Create tables that don't exist yet. Safe to call on every startup."""
     cn = _conn()

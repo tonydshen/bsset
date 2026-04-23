@@ -159,14 +159,6 @@ def _many_caps(tickers: list[str]) -> dict[str, int | None]:
     return cached
 
 # ── Division + industry computation ───────────────────────────────────────────
-def _fetch_and_store(tickers: list[str], period: str) -> pd.DataFrame:
-    """Download from yfinance and persist raw closes to price_history."""
-    closes = download_closes(tickers, period)
-    if not closes.empty:
-        db.prices_upsert(closes)
-    return closes
-
-
 def get_division(code: str, period: str) -> dict:
     key = f'div_{code}_{period}'
     cached = _mget(key)
@@ -187,9 +179,7 @@ def get_division(code: str, period: str) -> dict:
                        'cik':   _ticker_to_cik.get(t, ''),
                        'major': major}
 
-    if not db.prices_fresh(all_t, period):
-        _fetch_and_store(all_t, period)
-
+    # DB-only — nightly sync populates price_history; no yfinance here
     closes_raw = db.prices_get(all_t, db.period_start(period))
     if closes_raw.empty:
         return {}
@@ -372,9 +362,7 @@ def get_benchmarks(period: str) -> pd.DataFrame:
         idx = pd.to_datetime(cached['dates'])
         return pd.DataFrame({t: cached[t] for t in BENCHMARKS if t in cached}, index=idx)
 
-    if not db.prices_fresh(BENCHMARKS, period):
-        _fetch_and_store(BENCHMARKS, period)
-
+    # DB-only — nightly sync populates benchmarks; no yfinance here
     df = db.prices_get(BENCHMARKS, db.period_start(period))
     if df.empty:
         return pd.DataFrame()
@@ -651,7 +639,12 @@ def api_stock(ticker: str):
     if not div_entry or not ind_entry:
         return jsonify({'error': 'Division or industry data unavailable'}), 503
 
-    closes = download_closes([ticker], period)
+    # Try DB first; fall back to yfinance for individual tickers not yet in DB
+    closes = db.prices_get([ticker], db.period_start(period))
+    if closes.empty or ticker not in closes.columns:
+        closes = download_closes([ticker], period)
+        if not closes.empty:
+            db.prices_upsert(closes)
     if closes.empty or ticker not in closes.columns:
         return jsonify({'error': f'No price data for {ticker}'}), 404
 
@@ -681,6 +674,18 @@ def api_stock(ticker: str):
         'return_pct': ret_pct,
         'market_cap': cap,
     })
+
+
+@app.route('/api/admin/reload-cache', methods=['POST'])
+def api_reload_cache():
+    """Clear in-process memory cache. Called by sync.py after nightly reload."""
+    if request.remote_addr != '127.0.0.1':
+        abort(403)
+    with _mem_lock:
+        _mem_cache.clear()
+    for f in CHARTS_DIR.glob('*.png'):
+        f.unlink(missing_ok=True)
+    return jsonify({'status': 'cache cleared'})
 
 
 if __name__ == '__main__':
