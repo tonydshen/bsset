@@ -31,11 +31,13 @@ import db
 from bssetdb import load_or_build_cache, build_tree
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BATCH_SIZE  = 200          # tickers per yfinance call
-SYNC_PERIOD = '2y'         # covers all query periods: 1mo 3mo 6mo 1y ytd
-BATCH_PAUSE = 1.0          # seconds between batches (polite to yfinance)
-BENCHMARKS  = ['^DJI', '^IXIC', '^GSPC']
-APP_URL     = 'http://127.0.0.1:5002/api/admin/reload-cache'
+BATCH_SIZE   = 200          # tickers per yfinance call
+SYNC_PERIOD  = '2y'         # covers all query periods: 1mo 3mo 6mo 1y ytd
+BATCH_PAUSE  = 3.0          # seconds between batches (polite to yfinance)
+RATE_RETRIES = 3            # retries on rate-limit errors
+RATE_WAIT    = 90           # seconds to wait per retry attempt
+BENCHMARKS   = ['^DJI', '^IXIC', '^GSPC']
+APP_URL      = 'http://127.0.0.1:5002/api/admin/reload-cache'
 
 
 def log(msg: str) -> None:
@@ -43,19 +45,27 @@ def log(msg: str) -> None:
 
 
 def fetch_batch(tickers: list) -> pd.DataFrame:
-    """Download SYNC_PERIOD closes for a batch of tickers from yfinance."""
-    try:
-        df = yf.download(tickers, period=SYNC_PERIOD, auto_adjust=True,
-                         progress=False, threads=True)
-        if df.empty:
-            return pd.DataFrame()
-        closes = df['Close']
-        if isinstance(closes, pd.Series):      # single-ticker edge case
-            closes = closes.to_frame(name=tickers[0])
-        return closes.dropna(axis=1, how='all').ffill()
-    except Exception as e:
-        log(f'  batch error: {e}')
-        return pd.DataFrame()
+    """Download SYNC_PERIOD closes for a batch of tickers, with rate-limit retry."""
+    for attempt in range(1, RATE_RETRIES + 1):
+        try:
+            df = yf.download(tickers, period=SYNC_PERIOD, auto_adjust=True,
+                             progress=False, threads=True)
+            if df.empty:
+                return pd.DataFrame()
+            closes = df['Close']
+            if isinstance(closes, pd.Series):      # single-ticker edge case
+                closes = closes.to_frame(name=tickers[0])
+            return closes.dropna(axis=1, how='all').ffill()
+        except Exception as e:
+            if 'RateLimit' in type(e).__name__ or 'Too Many Requests' in str(e):
+                wait = RATE_WAIT * attempt
+                log(f'  rate limited — waiting {wait}s (attempt {attempt}/{RATE_RETRIES})')
+                time.sleep(wait)
+            else:
+                log(f'  batch error: {e}')
+                return pd.DataFrame()
+    log(f'  batch failed after {RATE_RETRIES} retries')
+    return pd.DataFrame()
 
 
 def main(dry_run: bool = False) -> None:

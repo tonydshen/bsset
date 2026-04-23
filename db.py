@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import math
 import os
 from datetime import date, datetime, timedelta
 
@@ -127,7 +128,7 @@ def prices_upsert(df: pd.DataFrame) -> None:
                 p = float(price)
             except (TypeError, ValueError):
                 continue
-            if pd.isfinite(p) and p > 0:          # reject NaN, inf, negatives
+            if math.isfinite(p) and p > 0:         # reject NaN, inf, negatives
                 rows.append((str(ticker), d, round(p, 4)))
     if not rows:
         return
