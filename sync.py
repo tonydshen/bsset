@@ -102,12 +102,15 @@ def main(dry_run: bool = False) -> None:
             elapsed = time.time() - t0
 
             if not closes.empty:
-                db.prices_upsert(closes)
-                total_tickers += closes.shape[1]
-                total_rows    += closes.shape[0] * closes.shape[1]
-                log(f'  [{i:>3}/{len(batches)}] '
-                    f'{closes.shape[1]:>3}/{len(batch)} tickers loaded '
-                    f'({closes.shape[0]} rows each) — {elapsed:.1f}s')
+                try:
+                    db.prices_upsert(closes)
+                    total_tickers += closes.shape[1]
+                    total_rows    += closes.shape[0] * closes.shape[1]
+                    log(f'  [{i:>3}/{len(batches)}] '
+                        f'{closes.shape[1]:>3}/{len(batch)} tickers loaded '
+                        f'({closes.shape[0]} rows each) — {elapsed:.1f}s')
+                except Exception as e:
+                    log(f'  [{i:>3}/{len(batches)}] upsert error (batch skipped): {e}')
             else:
                 log(f'  [{i:>3}/{len(batches)}] no data returned')
 

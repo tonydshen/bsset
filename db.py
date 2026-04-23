@@ -123,8 +123,12 @@ def prices_upsert(df: pd.DataFrame) -> None:
     for dt, row in df.iterrows():
         d = dt.date() if hasattr(dt, 'date') else dt
         for ticker, price in row.items():
-            if pd.notna(price):
-                rows.append((str(ticker), d, round(float(price), 4)))
+            try:
+                p = float(price)
+            except (TypeError, ValueError):
+                continue
+            if pd.isfinite(p) and p > 0:          # reject NaN, inf, negatives
+                rows.append((str(ticker), d, round(p, 4)))
     if not rows:
         return
     cn = _conn()
