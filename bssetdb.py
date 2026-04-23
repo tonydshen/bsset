@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-BSSET Backend – SEC EDGAR Sector / Industry / Ticker Browser
+BSSETDB Backend – SEC EDGAR Sector / Industry / Ticker Browser (MySQL edition)
 
 Data sources:
   https://www.sec.gov/files/company_tickers.json  – all tickers + CIKs
   https://data.sec.gov/submissions/CIK{:010d}.json – per-company SIC code
 
-First run builds sec_cache.json (~20 min, rate-limited per SEC policy).
-Subsequent runs load instantly from the cache.
+First run builds the companies table in MySQL (~20 min, rate-limited per SEC policy).
+Subsequent runs load instantly from MySQL.
 """
 
 import json
@@ -19,7 +19,7 @@ from pathlib import Path
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 HEADERS         = {'User-Agent': 'BSSET tshen@datacommlab.com'}
-CACHE_PATH      = Path(__file__).parent / 'sec_cache.json'
+CACHE_PATH      = Path(__file__).parent / 'sec_cache.json'   # fallback only
 TICKERS_URL     = 'https://www.sec.gov/files/company_tickers.json'
 SUBMISSIONS_URL = 'https://data.sec.gov/submissions/CIK{:010d}.json'
 RATE_LIMIT      = 0.12          # seconds between requests (≤10 req/s per SEC policy)
@@ -146,27 +146,48 @@ def sic_to_industry(sic: int) -> str:
     return MAJOR_GROUPS.get(major, f'SIC Group {major:02d}xx')
 
 
-# ── Cache ─────────────────────────────────────────────────────────────────────
+# ── Cache / DB ────────────────────────────────────────────────────────────────
 def load_or_build_cache() -> dict:
+    try:
+        import db
+        if db.companies_count() > 0:
+            print('Loading companies from MySQL ...', end=' ', flush=True)
+            cache = db.companies_load()
+            print(f'{len(cache)} companies.')
+            return cache
+    except Exception as e:
+        print(f'MySQL unavailable ({e}), falling back to file cache.')
     if CACHE_PATH.exists():
         print(f'Loading cache from {CACHE_PATH.name} ...', end=' ', flush=True)
         cache = json.loads(CACHE_PATH.read_text())
         print(f'{len(cache)} companies.')
+        try:
+            import db
+            print('Seeding MySQL companies table ...', end=' ', flush=True)
+            rows = []
+            for cik, info in cache.items():
+                sic = info['sic']
+                div_code, _ = sic_to_sector(sic)
+                rows.append((str(cik), info['ticker'], info['title'], sic, div_code, sic // 100))
+            db.companies_save(rows)
+            print(f'{len(rows)} rows saved.')
+        except Exception as e:
+            print(f'Could not seed MySQL: {e}')
         return cache
     return _build_cache()
 
 
 def _build_cache() -> dict:
     print('Fetching company list from SEC ...')
-    raw      = fetch_json(TICKERS_URL)
-    companies = list(raw.values())          # [{cik_str, ticker, title}, ...]
-    total    = len(companies)
+    raw       = fetch_json(TICKERS_URL)
+    companies = list(raw.values())
+    total     = len(companies)
     print(f'  {total} tickers found.')
     print('  Fetching SIC codes from data.sec.gov (runs once; ~20 min).')
     print('  Progress is saved every 100 companies — safe to interrupt.\n')
 
     cache: dict = {}
-    if CACHE_PATH.exists():                 # resume from partial run
+    if CACHE_PATH.exists():
         cache = json.loads(CACHE_PATH.read_text())
 
     fetched = 0
@@ -198,6 +219,20 @@ def _build_cache() -> dict:
 
     CACHE_PATH.write_text(json.dumps(cache))
     print(f'\nDone. {len(cache)} companies cached to {CACHE_PATH.name}.')
+
+    try:
+        import db
+        print('Saving companies to MySQL ...', end=' ', flush=True)
+        rows = []
+        for cik, info in cache.items():
+            sic = info['sic']
+            div_code, _ = sic_to_sector(sic)
+            rows.append((str(cik), info['ticker'], info['title'], sic, div_code, sic // 100))
+        db.companies_save(rows)
+        print(f'{len(rows)} rows saved.')
+    except Exception as e:
+        print(f'Could not save to MySQL: {e}')
+
     return cache
 
 
@@ -213,10 +248,10 @@ def build_tree(cache: dict) -> dict:
     """
     tree: dict = {}
     for _cik, info in cache.items():
-        sic   = info['sic']
+        sic       = info['sic']
         sc, sname = sic_to_sector(sic)
-        major = sic // 100
-        iname = sic_to_industry(sic)
+        major     = sic // 100
+        iname     = sic_to_industry(sic)
 
         tree.setdefault(sc, {'name': sname, 'industries': {}})
         tree[sc]['industries'].setdefault(major, {'name': iname, 'companies': []})
@@ -228,9 +263,8 @@ def build_tree(cache: dict) -> dict:
     return tree
 
 
-# ── UI ────────────────────────────────────────────────────────────────────────
+# ── CLI UI (unchanged from bsset.py) ─────────────────────────────────────────
 def pick(items: list, prompt: str):
-    """Print numbered menu; return selected item or None (back/quit)."""
     print()
     for i, item in enumerate(items, 1):
         print(f'  {i:>3}. {item}')
@@ -246,10 +280,9 @@ def pick(items: list, prompt: str):
         print('  Enter a number from the list.')
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
     print('═' * 52)
-    print('  BSSET — SEC Sector / Industry / Ticker Browser')
+    print('  BSSETDB — SEC Sector / Industry / Ticker Browser')
     print('═' * 52)
     print()
 
@@ -257,7 +290,6 @@ def main() -> None:
     tree  = build_tree(cache)
 
     while True:
-        # Level 1 — Sectors
         codes  = sorted(tree.keys())
         labels = [
             f'{sc}  {tree[sc]["name"]}  '
@@ -274,7 +306,6 @@ def main() -> None:
         sector = tree[sc]
 
         while True:
-            # Level 2 — Industries
             ikeys   = sorted(sector['industries'].keys())
             ilabels = [
                 f'{sector["industries"][k]["name"]}  '
@@ -289,7 +320,6 @@ def main() -> None:
             ik       = ikeys[ilabels.index(sel2)]
             industry = sector['industries'][ik]
 
-            # Level 3 — Tickers
             cos = sorted(industry['companies'], key=lambda c: c['ticker'])
             print(f'\n── TICKERS — {industry["name"]} ' + '─' * 20)
             print(f'  {"TICKER":<8}  {"SIC":<6}  COMPANY')
@@ -301,12 +331,12 @@ def main() -> None:
 
 
 USAGE = """\
-Usage: bsset.py [OPTION]
+Usage: bssetdb.py [OPTION]
 
 Options:
   (none)           Launch interactive sector/industry/ticker browser
-  --build-cache    Download SIC data for all companies and exit
-  --cache-status   Show how many companies are cached vs total
+  --build-cache    Download SIC data for all companies and save to MySQL
+  --cache-status   Show how many companies are in MySQL vs total from SEC
   --help           Show this message and exit
 """
 
@@ -320,7 +350,11 @@ if __name__ == '__main__':
     if arg == '--cache-status':
         total_raw = fetch_json(TICKERS_URL)
         total = len(total_raw)
-        cached = len(json.loads(CACHE_PATH.read_text())) if CACHE_PATH.exists() else 0
+        try:
+            import db
+            cached = db.companies_count()
+        except Exception:
+            cached = len(json.loads(CACHE_PATH.read_text())) if CACHE_PATH.exists() else 0
         pct = cached / total * 100 if total else 0
         print(f'Cached : {cached:,}')
         print(f'Total  : {total:,}')

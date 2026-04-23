@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BSSET Web Application — Flask backend
+BSSETDB Web Application — Flask backend (MySQL edition)
 Performance charts using yfinance data and SEC EDGAR taxonomy.
 
 Architecture:
@@ -11,11 +11,12 @@ Architecture:
   GET /charts/<filename>                      → serve generated PNG files
 
 Caching:
-  data_cache.json   — computed performance data (24 h TTL per key)
-  charts/           — generated PNG files (24 h TTL by mtime)
+  MySQL price_history  — raw close prices (persistent across restarts)
+  MySQL market_caps    — market caps with 24 h TTL
+  In-process dict      — computed division/industry averages (24 h TTL, cleared on restart)
+  charts/              — generated PNG files (24 h TTL by mtime)
 """
 
-import json
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,14 +32,14 @@ import pandas as pd
 import yfinance as yf
 from flask import Flask, jsonify, send_file, send_from_directory, request, abort
 
-from bsset import MAJOR_GROUPS, load_or_build_cache, build_tree
+import db
+from bssetdb import MAJOR_GROUPS, load_or_build_cache, build_tree
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-BASE_DIR        = Path(__file__).parent
-CHARTS_DIR      = BASE_DIR / 'charts'
-DATA_CACHE_PATH = BASE_DIR / 'data_cache.json'
+BASE_DIR   = Path(__file__).parent
+CHARTS_DIR = BASE_DIR / 'charts'
 
-CACHE_TTL      = 86_400       # 24 hours
+CACHE_TTL      = 86_400       # 24 hours (charts + in-process memory)
 BENCHMARKS     = ['^DJI', '^IXIC', '^GSPC']
 BENCH_LABELS   = {'^DJI': 'Dow Jones', '^IXIC': 'NASDAQ', '^GSPC': 'S&P 500'}
 VALID_PERIODS  = {'1mo', '3mo', '6mo', '1y', 'ytd'}
@@ -64,22 +65,19 @@ app = Flask(__name__)
 _sec_cache:     dict = {}   # CIK str → {ticker, title, sic}
 _tree:          dict = {}   # built by build_tree()
 _ticker_to_cik: dict = {}   # TICKER_UPPER → cik str (reverse map)
-_data_cache:    dict = {}   # computed performance data (persisted to JSON)
-_lock           = threading.Lock()
+
+# In-process memory cache (computed averages; cleared on restart)
+_mem_cache: dict = {}
+_mem_lock        = threading.Lock()
 
 
 def _startup() -> None:
-    global _sec_cache, _tree, _ticker_to_cik, _data_cache
+    global _sec_cache, _tree, _ticker_to_cik
     CHARTS_DIR.mkdir(exist_ok=True)
     print('Loading SEC cache...')
     _sec_cache = load_or_build_cache()
     _tree = build_tree(_sec_cache)
     _ticker_to_cik = {v['ticker'].upper(): k for k, v in _sec_cache.items()}
-    if DATA_CACHE_PATH.exists():
-        try:
-            _data_cache = json.loads(DATA_CACHE_PATH.read_text())
-        except Exception:
-            pass
     total = sum(sum(len(i['companies']) for i in s['industries'].values())
                 for s in _tree.values())
     print(f'Ready — {total:,} companies in {len(_tree)} divisions.')
@@ -87,22 +85,18 @@ def _startup() -> None:
 
 _startup()
 
-# ── Cache utilities ────────────────────────────────────────────────────────────
-def _fresh(e: dict | None) -> bool:
-    return bool(e) and (time.time() - e.get('ts', 0)) < CACHE_TTL
+# ── In-process memory cache ────────────────────────────────────────────────────
+def _mget(key: str):
+    with _mem_lock:
+        e = _mem_cache.get(key)
+    if e and (time.time() - e['ts']) < CACHE_TTL:
+        return e['v']
+    return None
 
 
-def _cget(key: str) -> dict | None:
-    with _lock:
-        e = _data_cache.get(key)
-    return e if _fresh(e) else None
-
-
-def _cset(key: str, val: dict) -> None:
-    val['ts'] = time.time()
-    with _lock:
-        _data_cache[key] = val
-        DATA_CACHE_PATH.write_text(json.dumps(_data_cache))
+def _mset(key: str, val) -> None:
+    with _mem_lock:
+        _mem_cache[key] = {'v': val, 'ts': time.time()}
 
 
 def _chart_fresh(name: str) -> bool:
@@ -111,7 +105,6 @@ def _chart_fresh(name: str) -> bool:
 
 # ── Price download ─────────────────────────────────────────────────────────────
 def _yf_kwargs(period: str) -> dict:
-    """Return yfinance date kwargs for the given period string."""
     if period == 'ytd':
         return {'start': date(date.today().year, 1, 1).isoformat(),
                 'end':   date.today().isoformat()}
@@ -119,11 +112,6 @@ def _yf_kwargs(period: str) -> dict:
 
 
 def download_closes(tickers: list[str], period: str) -> pd.DataFrame:
-    """
-    Download auto-adjusted close prices for a list of tickers.
-    yfinance 1.x always returns a MultiIndex DataFrame; df['Close'] is a DataFrame.
-    Returns a clean DataFrame (tickers as columns), dropping all-NaN columns.
-    """
     if not tickers:
         return pd.DataFrame()
     try:
@@ -134,40 +122,18 @@ def download_closes(tickers: list[str], period: str) -> pd.DataFrame:
         return pd.DataFrame()
     if df.empty:
         return pd.DataFrame()
-    closes = df['Close']                          # DataFrame in yfinance 1.x
-    closes = closes.dropna(axis=1, how='all')    # drop tickers with no data
-    closes = closes.ffill().dropna(how='all')    # forward-fill gaps; drop all-NaN rows
+    closes = df['Close']
+    closes = closes.dropna(axis=1, how='all')
+    closes = closes.ffill().dropna(how='all')
     return closes
 
 
 def _normalize(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize each column to 100 at its first valid price."""
     return df.div(df.bfill().iloc[0]).mul(100.0)
 
 
 def _group_avg(normed: pd.DataFrame) -> pd.Series:
-    """Equal-weighted mean across all ticker columns."""
     return normed.mean(axis=1)
-
-
-def get_benchmarks(period: str) -> pd.DataFrame:
-    """Download and normalize DJIA/NASDAQ/S&P500. Cached 24 h."""
-    key = f'bench_{period}'
-    e = _cget(key)
-    if e:
-        idx = pd.to_datetime(e['dates'])
-        return pd.DataFrame({t: e[t] for t in BENCHMARKS if t in e}, index=idx)
-
-    df = download_closes(BENCHMARKS, period)
-    if df.empty:
-        return pd.DataFrame()
-    normed = _normalize(df)
-    rec = {'dates': normed.index.strftime('%Y-%m-%d').tolist()}
-    for t in BENCHMARKS:
-        if t in normed.columns:
-            rec[t] = [round(v, 4) for v in normed[t].tolist()]
-    _cset(key, rec)
-    return normed
 
 # ── Market cap ─────────────────────────────────────────────────────────────────
 def _one_cap(ticker: str) -> int | None:
@@ -179,36 +145,37 @@ def _one_cap(ticker: str) -> int | None:
 
 
 def _many_caps(tickers: list[str]) -> dict[str, int | None]:
-    """Parallel market-cap fetch (up to 8 concurrent threads)."""
-    out: dict = {}
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        futs = {ex.submit(_one_cap, t): t for t in tickers}
-        for f in as_completed(futs):
-            out[futs[f]] = f.result()
-    return out
+    cached  = db.caps_get(tickers)
+    missing = [t for t in tickers if t not in cached]
+    if missing:
+        fetched: dict = {}
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futs = {ex.submit(_one_cap, t): t for t in missing}
+            for f in as_completed(futs):
+                fetched[futs[f]] = f.result()
+        db.caps_save(fetched)
+        cached.update(fetched)
+    return cached
 
 # ── Division + industry computation ───────────────────────────────────────────
-def get_division(code: str, period: str) -> dict:
-    """
-    Download ALL tickers in a division in one batch.
-    Computes division avg and, per industry: avg + per-ticker total returns.
-    All data cached for 24 h under key 'div_{code}_{period}'.
+def _fetch_and_store(tickers: list[str], period: str) -> pd.DataFrame:
+    """Download from yfinance and persist raw closes to price_history."""
+    closes = download_closes(tickers, period)
+    if not closes.empty:
+        db.prices_upsert(closes)
+    return closes
 
-    Returned entry schema:
-      {ts, code, dates, avg, industries: {
-          '<major_str>': {name, dates, avg, total_returns, ticker_meta}
-      }}
-    """
+
+def get_division(code: str, period: str) -> dict:
     key = f'div_{code}_{period}'
-    e = _cget(key)
-    if e:
-        return e
+    cached = _mget(key)
+    if cached:
+        return cached
 
     sector = _tree.get(code)
     if not sector:
         return {}
 
-    # Build ticker list with per-ticker metadata
     all_t: list[str] = []
     meta: dict[str, dict] = {}
     for major, ind in sector['industries'].items():
@@ -216,17 +183,21 @@ def get_division(code: str, period: str) -> dict:
             t = co['ticker'].upper()
             all_t.append(t)
             meta[t] = {'title': co['title'],
-                        'cik':   _ticker_to_cik.get(t, ''),
-                        'major': major}
+                       'cik':   _ticker_to_cik.get(t, ''),
+                       'major': major}
 
-    closes = download_closes(all_t, period)
+    # Fetch from yfinance if price_history doesn't have fresh data
+    if not db.prices_fresh(all_t, period):
+        _fetch_and_store(all_t, period)
+
+    closes = db.prices_get(all_t, db.period_start(period))
     if closes.empty:
         return {}
 
+    closes  = closes.dropna(axis=1, how='all').ffill().dropna(how='all')
     normed  = _normalize(closes)
     div_avg = _group_avg(normed)
 
-    # Per-industry averages and total returns (all computed from the same batch)
     industries: dict[str, dict] = {}
     for major, ind in sector['industries'].items():
         ind_t = [t for t in normed.columns if meta.get(t, {}).get('major') == major]
@@ -249,25 +220,15 @@ def get_division(code: str, period: str) -> dict:
         'avg':        [round(v, 4) for v in div_avg.tolist()],
         'industries': industries,
     }
-    _cset(key, entry)
+    _mset(key, entry)
     return entry
 
 
 def get_industry(div_code: str, major: int, period: str) -> dict:
-    """
-    Uses the division cache (calls get_division if needed).
-    Fetches market caps for top/bottom 10th-percentile performers.
-    Cached under 'ind_{div_code}_{major}_{period}'.
-
-    Returned entry schema:
-      {ts, name, dates, avg,
-       best:  [{ticker, title, cik, return_pct, market_cap}],
-       worst: [{...}]}
-    """
     key = f'ind_{div_code}_{major}_{period}'
-    e = _cget(key)
-    if e:
-        return e
+    cached = _mget(key)
+    if cached:
+        return cached
 
     div = get_division(div_code, period)
     if not div:
@@ -280,11 +241,11 @@ def get_industry(div_code: str, major: int, period: str) -> dict:
     total_ret = pd.Series(ind_data['total_returns'])
     tmeta     = ind_data['ticker_meta']
     n         = len(total_ret)
-    n_cut     = max(1, n // 10)      # 10th percentile, minimum 1
+    n_cut     = max(1, n // 10)
 
     sorted_r  = total_ret.sort_values()
     worst_t   = sorted_r.iloc[:n_cut].index.tolist()
-    best_t    = sorted_r.iloc[-n_cut:].index.tolist()[::-1]  # highest return first
+    best_t    = sorted_r.iloc[-n_cut:].index.tolist()[::-1]
 
     cap_map   = _many_caps(list(set(best_t + worst_t)))
 
@@ -303,29 +264,19 @@ def get_industry(div_code: str, major: int, period: str) -> dict:
         'avg':     ind_data['avg'],
         'best':    _build(best_t),
         'worst':   _build(worst_t),
-        'cap_map': cap_map,   # persisted so /api/performers can reuse + extend it
+        'cap_map': cap_map,
     }
-    _cset(key, entry)
+    _mset(key, entry)
     return entry
+
 
 def get_performers(div_code: str, major: int, period: str,
                    best_pct: float, worst_pct: float) -> dict:
-    """
-    Return best/worst performers at arbitrary percentile thresholds.
-    Reads total_returns from the division cache (no yfinance call).
-    Reuses the cap_map stored in the industry cache entry and fetches
-    only caps for tickers not yet seen (incremental growth).
-    """
-    ind_key   = f'ind_{div_code}_{major}_{period}'
-    ind_entry = _cget(ind_key) or get_industry(div_code, major, period)
-    if not ind_entry:
+    div = get_division(div_code, period)
+    if not div:
         return {}
 
-    div_entry = _cget(f'div_{div_code}_{period}') or get_division(div_code, period)
-    if not div_entry:
-        return {}
-
-    ind_data = div_entry['industries'].get(str(major))
+    ind_data = div['industries'].get(str(major))
     if not ind_data:
         return {}
 
@@ -340,16 +291,7 @@ def get_performers(div_code: str, major: int, period: str,
     worst_t  = sorted_r.iloc[:n_worst].index.tolist()
     best_t   = sorted_r.iloc[-n_best:].index.tolist()[::-1]
 
-    # Incrementally grow cap_map — only fetch caps for tickers not yet cached
-    cap_map     = dict(ind_entry.get('cap_map', {}))
-    new_tickers = [t for t in set(best_t + worst_t) if t not in cap_map]
-    if new_tickers:
-        cap_map.update(_many_caps(new_tickers))
-        # Update the cap_map in place, keeping the existing 'ts' (no TTL reset)
-        with _lock:
-            if ind_key in _data_cache:
-                _data_cache[ind_key]['cap_map'] = cap_map
-                DATA_CACHE_PATH.write_text(json.dumps(_data_cache))
+    cap_map = _many_caps(list(set(best_t + worst_t)))
 
     def _build(tlist: list[str]) -> list[dict]:
         return [{
@@ -362,6 +304,30 @@ def get_performers(div_code: str, major: int, period: str,
 
     return {'best': _build(best_t), 'worst': _build(worst_t)}
 
+
+def get_benchmarks(period: str) -> pd.DataFrame:
+    key = f'bench_{period}'
+    cached = _mget(key)
+    if cached is not None:
+        idx = pd.to_datetime(cached['dates'])
+        return pd.DataFrame({t: cached[t] for t in BENCHMARKS if t in cached}, index=idx)
+
+    if not db.prices_fresh(BENCHMARKS, period):
+        _fetch_and_store(BENCHMARKS, period)
+
+    df = db.prices_get(BENCHMARKS, db.period_start(period))
+    if df.empty:
+        return pd.DataFrame()
+
+    df     = df.dropna(axis=1, how='all').ffill().dropna(how='all')
+    normed = _normalize(df)
+
+    rec = {'dates': normed.index.strftime('%Y-%m-%d').tolist()}
+    for t in BENCHMARKS:
+        if t in normed.columns:
+            rec[t] = [round(v, 4) for v in normed[t].tolist()]
+    _mset(key, rec)
+    return normed
 
 # ── Chart generation ───────────────────────────────────────────────────────────
 def _base_fig() -> tuple[plt.Figure, plt.Axes]:
@@ -407,8 +373,7 @@ def _add_benchmarks(ax: plt.Axes, bench: pd.DataFrame) -> None:
 
 
 def make_division_chart(code: str, period: str,
-                         div_s: pd.Series, bench: pd.DataFrame) -> str:
-    """Division avg vs. three benchmark indices."""
+                        div_s: pd.Series, bench: pd.DataFrame) -> str:
     fname = f'div_{code}_{period}.png'
     if _chart_fresh(fname):
         return str(CHARTS_DIR / fname)
@@ -423,9 +388,8 @@ def make_division_chart(code: str, period: str,
 
 
 def make_industry_chart(div_code: str, major: int, period: str,
-                         ind_s: pd.Series, div_s: pd.Series,
-                         bench: pd.DataFrame) -> str:
-    """Industry avg vs. division avg and three benchmarks."""
+                        ind_s: pd.Series, div_s: pd.Series,
+                        bench: pd.DataFrame) -> str:
     fname = f'ind_{div_code}_{major}_{period}.png'
     if _chart_fresh(fname):
         return str(CHARTS_DIR / fname)
@@ -444,11 +408,9 @@ def make_industry_chart(div_code: str, major: int, period: str,
 
 
 def make_stock_chart(ticker: str, div_code: str, major: int, period: str,
-                      stk_s: pd.Series, div_s: pd.Series,
-                      ind_s: pd.Series, bench: pd.DataFrame) -> str:
-    """Stock vs. industry avg, division avg, and three benchmarks."""
+                     stk_s: pd.Series, div_s: pd.Series,
+                     ind_s: pd.Series, bench: pd.DataFrame) -> str:
     fname = f'stk_{ticker}_{div_code}_{major}_{period}.png'
-    # Stock charts always regenerate (each ticker is unique per request)
     fig, ax = _base_fig()
     _add_benchmarks(ax, bench)
     div_name = _tree.get(div_code, {}).get('name', div_code)
@@ -537,7 +499,7 @@ def api_industry(div_code: str, major: int):
     if not ind_entry:
         return jsonify({'error': 'No market data available for this industry'}), 503
 
-    div_entry = _cget(f'div_{div_code}_{period}') or get_division(div_code, period)
+    div_entry = get_division(div_code, period)
     bench     = get_benchmarks(period)
     ind_s     = pd.Series(ind_entry['avg'],
                           index=pd.to_datetime(ind_entry['dates']))
@@ -624,10 +586,8 @@ def api_stock(ticker: str):
     except ValueError:
         return jsonify({'error': 'industry must be an integer'}), 400
 
-    # Ensure division + industry are cached (navigation normally does this; fall back if not)
-    div_entry = _cget(f'div_{div_code}_{period}') or get_division(div_code, period)
-    ind_entry = (_cget(f'ind_{div_code}_{major}_{period}')
-                 or get_industry(div_code, major, period))
+    div_entry = get_division(div_code, period)
+    ind_entry = get_industry(div_code, major, period)
     if not div_entry or not ind_entry:
         return jsonify({'error': 'Division or industry data unavailable'}), 503
 
@@ -642,7 +602,7 @@ def api_stock(ticker: str):
 
     try:
         chart_path = make_stock_chart(ticker, div_code, major, period,
-                                       stk_s, div_s, ind_s, bench)
+                                      stk_s, div_s, ind_s, bench)
     except Exception as exc:
         return jsonify({'error': f'Chart generation failed: {exc}'}), 500
 

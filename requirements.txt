@@ -3,3 +3,4 @@ yfinance>=1.2
 matplotlib>=3.8
 numpy>=1.26
 pandas>=2.1
+mysql-connector-python>=8.0
