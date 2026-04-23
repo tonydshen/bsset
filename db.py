@@ -213,14 +213,28 @@ def sync_complete(sync_id: int, status: str,
     finally:
         cn.close()
 
-def truncate_for_sync() -> None:
-    """Truncate tables that are fully rebuilt each nightly sync."""
+def clear_market_caps() -> None:
+    """Clear market_caps so they are re-fetched fresh during daytime queries."""
     cn = _conn()
     try:
         cur = cn.cursor()
-        cur.execute('TRUNCATE TABLE price_history')
         cur.execute('TRUNCATE TABLE market_caps')
         cn.commit()
+    finally:
+        cn.close()
+
+def prune_old_prices(keep_years: int = 2) -> int:
+    """Delete price_history rows older than keep_years. Returns rows deleted."""
+    cn = _conn()
+    try:
+        cur = cn.cursor()
+        cur.execute("""
+            DELETE FROM price_history
+            WHERE price_date < DATE_SUB(CURDATE(), INTERVAL %s YEAR)
+        """, (keep_years,))
+        deleted = cur.rowcount
+        cn.commit()
+        return deleted
     finally:
         cn.close()
 

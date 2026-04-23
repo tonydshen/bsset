@@ -31,11 +31,11 @@ import db
 from bssetdb import load_or_build_cache, build_tree
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BATCH_SIZE   = 200          # tickers per yfinance call
+BATCH_SIZE   = 100          # tickers per yfinance call
 SYNC_PERIOD  = '2y'         # covers all query periods: 1mo 3mo 6mo 1y ytd
-BATCH_PAUSE  = 3.0          # seconds between batches (polite to yfinance)
+BATCH_PAUSE  = 5.0          # seconds between batches (polite to yfinance)
 RATE_RETRIES = 3            # retries on rate-limit errors
-RATE_WAIT    = 90           # seconds to wait per retry attempt
+RATE_WAIT    = 120          # seconds to wait per retry attempt
 BENCHMARKS   = ['^DJI', '^IXIC', '^GSPC']
 APP_URL      = 'http://127.0.0.1:5002/api/admin/reload-cache'
 
@@ -93,9 +93,9 @@ def main(dry_run: bool = False) -> None:
             log('Dry run complete.')
             return
 
-        # 2. Truncate stale data ───────────────────────────────────────────────
-        log('Truncating price_history and market_caps...')
-        db.truncate_for_sync()
+        # 2. Clear market_caps so they refresh from yfinance during daytime ─────
+        log('Clearing market_caps...')
+        db.clear_market_caps()
 
         # 3. Fetch in batches and load ─────────────────────────────────────────
         batches        = [tickers[i:i+BATCH_SIZE]
@@ -129,6 +129,11 @@ def main(dry_run: bool = False) -> None:
         log(f'Load complete: {total_tickers:,} tickers, '
             f'~{total_rows:,} price rows inserted.')
 
+        # 4. Prune rows older than 2 years (keeps DB lean after repeated syncs) ─
+        log('Pruning price_history rows older than 2 years...')
+        pruned = db.prune_old_prices()
+        log(f'  {pruned:,} old rows deleted.')
+
         # 4. Signal app to clear in-process cache ─────────────────────────────
         try:
             req = urllib.request.Request(APP_URL, data=b'', method='POST')
@@ -137,8 +142,11 @@ def main(dry_run: bool = False) -> None:
         except Exception as e:
             log(f'Cache clear skipped (app may be stopped): {e}')
 
-        db.sync_complete(sync_id, 'success', total_tickers, total_rows)
-        log('=== Sync finished successfully ===')
+        pct = total_tickers / len(tickers) * 100
+        status = 'success' if pct >= 80 else 'partial'
+        db.sync_complete(sync_id, status, total_tickers, total_rows)
+        log(f'=== Sync finished: {status.upper()} '
+            f'({total_tickers:,}/{len(tickers):,} tickers = {pct:.0f}%) ===')
 
     except Exception as e:
         log(f'FATAL: {e}')
