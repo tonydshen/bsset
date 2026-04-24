@@ -128,8 +128,9 @@ def prices_upsert(df: pd.DataFrame) -> None:
                 p = float(price)
             except (TypeError, ValueError):
                 continue
-            if math.isfinite(p) and p > 0:         # reject NaN, inf, negatives
-                rows.append((str(ticker), d, round(p, 4)))
+            p_rounded = round(p, 4)
+            if math.isfinite(p) and p_rounded > 0:  # reject NaN, inf, zero-rounded
+                rows.append((str(ticker), d, p_rounded))
     if not rows:
         return
     cn = _conn()

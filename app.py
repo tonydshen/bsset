@@ -17,6 +17,7 @@ Caching:
   charts/              — generated PNG files (24 h TTL by mtime)
 """
 
+import math
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -213,7 +214,9 @@ def get_division(code: str, period: str) -> dict:
     if closes.empty:
         return {}
 
-    normed = _normalize(closes).dropna(axis=1, how='all')
+    normed = (_normalize(closes)
+              .replace([np.inf, -np.inf], np.nan)
+              .dropna(axis=1, how='all'))
     if normed.empty:
         return {}
 
@@ -229,13 +232,17 @@ def get_division(code: str, period: str) -> dict:
     clean_t  = per_ret[~iqr_mask].index.tolist()
 
     if iqr_t:
+        def _safe(v):
+            f = float(v)
+            return round(f, 4) if math.isfinite(f) else None
+
         now, today = datetime.now(), date.today()
         db.outliers_save([
             (t, meta.get(t, {}).get('title', t), meta.get(t, {}).get('cik', ''),
              code, meta.get(t, {}).get('major', 99), period,
              'iqr_return',
-             round(float(per_ret[t]), 4), None,
-             round(float(lower), 4), round(float(upper), 4),
+             _safe(per_ret[t]), None,
+             _safe(lower), _safe(upper),
              None, now, today)
             for t in iqr_t
         ])
