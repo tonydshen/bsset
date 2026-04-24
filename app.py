@@ -87,24 +87,6 @@ def _startup() -> None:
 _startup()
 
 
-def _prewarm() -> None:
-    """Pre-compute division caches in background so first user request is instant.
-    Largest divisions (most tickers) are warmed first."""
-    by_size = sorted(
-        _tree.keys(),
-        key=lambda c: sum(len(i['companies']) for i in _tree[c]['industries'].values()),
-        reverse=True
-    )
-    for code in by_size:
-        try:
-            get_division(code, DEFAULT_PERIOD)
-            print(f'Pre-warmed div {code}/{DEFAULT_PERIOD}', flush=True)
-        except Exception as e:
-            print(f'Pre-warm failed div {code}: {e}', flush=True)
-
-
-threading.Thread(target=_prewarm, daemon=True).start()
-
 # ── In-process memory cache ────────────────────────────────────────────────────
 def _mget(key: str):
     with _mem_lock:
@@ -693,6 +675,25 @@ def api_stock(ticker: str):
         'return_pct': ret_pct,
         'market_cap': cap,
     })
+
+
+def _prewarm() -> None:
+    """Pre-compute division caches in background so first user request is instant.
+    Largest divisions (most tickers) are warmed first."""
+    by_size = sorted(
+        _tree.keys(),
+        key=lambda c: sum(len(i['companies']) for i in _tree[c]['industries'].values()),
+        reverse=True
+    )
+    for code in by_size:
+        try:
+            get_division(code, DEFAULT_PERIOD)
+            print(f'Pre-warmed div {code}/{DEFAULT_PERIOD}', flush=True)
+        except Exception as e:
+            print(f'Pre-warm failed div {code}: {e}', flush=True)
+
+
+threading.Thread(target=_prewarm, daemon=True).start()
 
 
 @app.route('/api/admin/reload-cache', methods=['POST'])
