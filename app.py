@@ -17,7 +17,6 @@ Caching:
   charts/              — generated PNG files (24 h TTL by mtime)
 """
 
-import math
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -187,30 +186,10 @@ def get_division(code: str, period: str) -> dict:
         return {}
 
     closes_raw = closes_raw.dropna(axis=1, how='all')
-
-    # ── Layer 1: data quality filter — require ≥75% trading day coverage ──────
-    max_days = closes_raw.shape[0]
-    coverage = closes_raw.notna().sum()
-    min_days = max(1, int(max_days * 0.75))
-
-    sparse_t = coverage[coverage < min_days].index.tolist()
-    good_t   = coverage[coverage >= min_days].index.tolist()
-
-    if sparse_t:
-        now, today = datetime.now(), date.today()
-        db.outliers_save([
-            (t, meta.get(t, {}).get('title', t), meta.get(t, {}).get('cik', ''),
-             code, meta.get(t, {}).get('major', 99), period,
-             'sparse_data', None,
-             round(float(coverage[t]) / max_days * 100, 2),
-             None, None, None, now, today)
-            for t in sparse_t
-        ])
-
-    if not good_t:
+    if closes_raw.empty:
         return {}
 
-    closes = closes_raw[good_t].ffill().dropna(how='all')
+    closes = closes_raw.ffill().dropna(how='all')
     if closes.empty:
         return {}
 
@@ -220,47 +199,15 @@ def get_division(code: str, period: str) -> dict:
     if normed.empty:
         return {}
 
-    # ── Layer 2: IQR return filter — exclude extreme outliers from averages ────
-    per_ret = normed.iloc[-1] - 100.0
-    q1, q3  = per_ret.quantile(0.25), per_ret.quantile(0.75)
-    iqr     = q3 - q1
-    lower   = q1 - 3.0 * iqr
-    upper   = q3 + 3.0 * iqr
-
-    iqr_mask = (per_ret < lower) | (per_ret > upper)
-    iqr_t    = per_ret[iqr_mask].index.tolist()
-    clean_t  = per_ret[~iqr_mask].index.tolist()
-
-    if iqr_t:
-        def _safe(v):
-            f = float(v)
-            return round(f, 4) if math.isfinite(f) else None
-
-        now, today = datetime.now(), date.today()
-        db.outliers_save([
-            (t, meta.get(t, {}).get('title', t), meta.get(t, {}).get('cik', ''),
-             code, meta.get(t, {}).get('major', 99), period,
-             'iqr_return',
-             _safe(per_ret[t]), None,
-             _safe(lower), _safe(upper),
-             None, now, today)
-            for t in iqr_t
-        ])
-
-    # Averages use clean tickers only; returns/meta include all good tickers
-    # so performers display can still show the big winners/losers.
-    normed_clean = normed[clean_t] if clean_t else normed
-    div_avg      = _group_avg(normed_clean)
+    div_avg = _group_avg(normed)
 
     industries: dict[str, dict] = {}
     for major, ind in sector['industries'].items():
-        ind_all   = [t for t in normed.columns       if meta.get(t, {}).get('major') == major]
-        ind_clean = [t for t in normed_clean.columns if meta.get(t, {}).get('major') == major]
+        ind_all = [t for t in normed.columns if meta.get(t, {}).get('major') == major]
         if not ind_all:
             continue
 
-        avg_src = normed_clean[ind_clean] if ind_clean else normed[ind_all]
-        ia      = _group_avg(avg_src)
+        ia      = _group_avg(normed[ind_all])
         ret     = (normed[ind_all].iloc[-1] - 100.0).to_dict()
 
         industries[str(major)] = {
